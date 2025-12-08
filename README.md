@@ -1,6 +1,6 @@
 # Intercom Inbox App
 
-A sample Intercom Inbox app built with Node.js, Express, and TypeScript using Canvas Kit. This app allows teammates to collect department information about contacts directly from the Intercom Inbox.
+A sample Intercom Inbox app built with Node.js and Express using Canvas Kit. This app allows teammates to collect department information about contacts directly from the Intercom Inbox.
 
 ## Features
 
@@ -33,33 +33,15 @@ npm install
 
 ## Development
 
-Run the app in development mode:
-
-```bash
-yarn dev
-# or
-npm run dev
-```
-
-The server will start on `http://localhost:3000`
-
-## Building for Production
-
-Build the TypeScript code:
-
-```bash
-yarn build
-# or
-npm run build
-```
-
-Run the production build:
+Run the app:
 
 ```bash
 yarn start
 # or
 npm start
 ```
+
+The server will start on `http://localhost:3000`
 
 ## Setting Up Your Intercom App
 
@@ -131,12 +113,10 @@ The app checks which button was clicked:
 ```
 intercom-app/
 ├── src/
-│   ├── index.ts          # Main server file with Express routes
+│   ├── index.js          # Main server file with Express routes
 │   └── public/
 │       └── index.html    # Frontend HTML with Messenger widget
-├── dist/                 # Compiled JavaScript (after build)
 ├── package.json          # Dependencies and scripts
-├── tsconfig.json         # TypeScript configuration
 └── README.md            # This file
 ```
 
@@ -158,20 +138,20 @@ intercom-app/
 
 ### Adding More Departments
 
-Edit the `initialCanvas` object in `src/index.ts`:
+Edit the `initialCanvas` object in `src/index.js`:
 
-```typescript
+```javascript
 options: [
   {
-    type: "option",
-    id: "sales",
-    text: "Sales",
+    type: 'option',
+    id: 'sales',
+    text: 'Sales',
   },
   // Add more options here
   {
-    type: "option",
-    id: "marketing",
-    text: "Marketing",
+    type: 'option',
+    id: 'marketing',
+    text: 'Marketing',
   },
 ]
 ```
@@ -180,13 +160,13 @@ options: [
 
 Update the text component in `initialCanvas`:
 
-```typescript
+```javascript
 {
-  type: "text",
-  id: "department",
-  text: "Your custom question here:",
-  align: "center",
-  style: "header",
+  type: 'text',
+  id: 'department',
+  text: 'Your custom question here:',
+  align: 'center',
+  style: 'header',
 }
 ```
 

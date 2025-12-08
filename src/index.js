@@ -1,7 +1,10 @@
-import express, { Request, Response } from 'express';
+import express from 'express';
 import bodyParser from 'body-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -69,7 +72,7 @@ const initialCanvas = {
 };
 
 // Root route - serves the HTML file
-app.get('/', (req: Request, res: Response) => {
+app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
@@ -77,7 +80,7 @@ app.get('/', (req: Request, res: Response) => {
   This is an endpoint that Intercom will POST HTTP request when a teammate inserts 
   the app into the inbox, or a new conversation is viewed.
 */
-app.post('/initialize', (req: Request, res: Response) => {
+app.post('/initialize', (req, res) => {
   console.log('Initialize endpoint hit');
   res.send(initialCanvas);
 });
@@ -93,7 +96,7 @@ app.post('/initialize', (req: Request, res: Response) => {
   them the final submission canvas. If they click the refresh button to submit 
   another, it will show the initial canvas once again to repeat the process.
 */
-app.post('/submit', (req: Request, res: Response) => {
+app.post('/submit', (req, res) => {
   console.log('Submit endpoint hit with component_id:', req.body.component_id);
   console.log('Input values:', req.body.input_values);
 
@@ -134,3 +137,4 @@ const listener = app.listen(PORT, () => {
   console.log(`Your app is listening on port ${PORT}`);
   console.log(`Visit http://localhost:${PORT} to view your app`);
 });
+

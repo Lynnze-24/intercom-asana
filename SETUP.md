@@ -10,7 +10,7 @@
 ## Step 2: Start the Server
 
 ```bash
-yarn dev
+yarn start
 ```
 
 The server will start at `http://localhost:3000`
@@ -91,7 +91,7 @@ Copy the public URL (e.g., `https://abc123.ngrok.io`)
 
 ## Next Steps
 
-- Customize the departments in `src/index.ts`
+- Customize the departments in `src/index.js`
 - Add more form fields (text input, dropdown, etc.)
 - Save data to your database
 - Integrate with other APIs
