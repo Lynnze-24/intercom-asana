@@ -14,6 +14,16 @@ const ASANA_TOKEN =
 const ASANA_WORKSPACE = '1211014974336131';
 const ASANA_PROJECT = '1212353369442239';
 
+// Asana Custom Field GIDs - You need to get these from your Asana project
+// To get custom field GIDs, go to: https://app.asana.com/api/1.0/projects/{ASANA_PROJECT}/custom_field_settings
+const ASANA_CUSTOM_FIELDS = {
+  WALLET: null, // Replace with actual GID
+  PAYMENT_GATEWAY: null, // Replace with actual GID
+  TRANSACTION_ID: null, // Replace with actual GID
+  AMOUNT: null, // Replace with actual GID
+  AGENT_REMARK: null, // Replace with actual GID
+};
+
 // Intercom configuration
 const INTERCOM_TOKEN =
   'dG9rOmQxMmIxYTQxXzcwMDhfNGE2Ml9iODU1XzQ5MjFkNjA4NWRlZDoxOjA=';
@@ -147,15 +157,63 @@ async function updateConversationAttribute(conversationId, asanaTaskId) {
   }
 }
 
+// Helper function to get custom field settings for a project
+async function getAsanaCustomFields() {
+  try {
+    const response = await fetch(
+      `https://app.asana.com/api/1.0/projects/${ASANA_PROJECT}/custom_field_settings`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${ASANA_TOKEN}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      console.log('Custom field settings:', JSON.stringify(data, null, 2));
+      return data.data;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error fetching custom fields:', error);
+    return null;
+  }
+}
+
+// Helper function to validate if string is a valid URL
+function isValidUrl(string) {
+  try {
+    const url = new URL(string);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch (err) {
+    return false;
+  }
+}
+
 // Helper function to upload attachment to Asana task
 async function uploadAttachmentToAsana(taskId, attachmentUrl) {
   try {
+    // Validate if it's a proper URL
+    if (!isValidUrl(attachmentUrl)) {
+      console.error('Invalid attachment URL:', attachmentUrl);
+      console.log(
+        'The attachment field appears to be an ID or invalid URL. Please provide a full URL.'
+      );
+      return null;
+    }
+
     // Download the file from the attachment URL
     console.log('Downloading attachment from:', attachmentUrl);
     const fileResponse = await fetch(attachmentUrl);
 
     if (!fileResponse.ok) {
-      console.error('Failed to download attachment');
+      console.error(
+        'Failed to download attachment. Status:',
+        fileResponse.status
+      );
       return null;
     }
 
@@ -209,6 +267,40 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
 // Root route - serves the HTML file
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Helper endpoint to get custom field GIDs
+app.get('/asana-custom-fields', async (req, res) => {
+  try {
+    const customFieldSettings = await getAsanaCustomFields();
+
+    if (customFieldSettings) {
+      const fields = customFieldSettings.map((setting) => ({
+        name: setting.custom_field.name,
+        gid: setting.custom_field.gid,
+        type: setting.custom_field.resource_type,
+        description: setting.custom_field.description,
+      }));
+
+      res.json({
+        success: true,
+        project_id: ASANA_PROJECT,
+        custom_fields: fields,
+        message:
+          'Copy these GIDs to the ASANA_CUSTOM_FIELDS object in index.js',
+      });
+    } else {
+      res.json({
+        success: false,
+        message: 'Failed to fetch custom fields from Asana',
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
 });
 
 /*
@@ -337,25 +429,55 @@ app.post('/submit', async (req, res) => {
 
       // Extract the 6 custom fields
       const attachmentUrl = customAttrs.attachment || null;
-      const wallet = customAttrs.Wallet || 'N/A';
-      const paymentGateway = customAttrs['Payment Gateway'] || 'N/A';
-      const transactionID = customAttrs['Transaction ID'] || 'N/A';
-      const amount = customAttrs.Amount || 'N/A';
-      const agentRemark = customAttrs['Agent Remark'] || 'N/A';
+      const wallet = customAttrs.Wallet || '';
+      const paymentGateway = customAttrs['Payment Gateway'] || '';
+      const transactionID = customAttrs['Transaction ID'] || '';
+      const amount = customAttrs.Amount || '';
+      const agentRemark = customAttrs['Agent Remark'] || '';
 
-      // Build comprehensive notes with all fields
+      // Build basic task notes
       const taskNotes = `Task created from Intercom conversation ${conversationId}
 
 Contact Information:
 - Name: ${contactName}
-- Email: ${req.body.contact?.email || req.body.customer?.email || 'N/A'}
+- Email: ${req.body.contact?.email || req.body.customer?.email || 'N/A'}`;
 
-Transaction Details:
-- Wallet: ${wallet}
-- Payment Gateway: ${paymentGateway}
-- Transaction ID: ${transactionID}
-- Amount: ${amount}
-- Agent Remark: ${agentRemark}`;
+      // Build custom fields object for Asana
+      const customFields = {};
+
+      if (ASANA_CUSTOM_FIELDS.WALLET && wallet) {
+        customFields[ASANA_CUSTOM_FIELDS.WALLET] = wallet;
+      }
+      if (ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY && paymentGateway) {
+        customFields[ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY] = paymentGateway;
+      }
+      if (ASANA_CUSTOM_FIELDS.TRANSACTION_ID && transactionID) {
+        customFields[ASANA_CUSTOM_FIELDS.TRANSACTION_ID] = transactionID;
+      }
+      if (ASANA_CUSTOM_FIELDS.AMOUNT && amount) {
+        customFields[ASANA_CUSTOM_FIELDS.AMOUNT] = amount;
+      }
+      if (ASANA_CUSTOM_FIELDS.AGENT_REMARK && agentRemark) {
+        customFields[ASANA_CUSTOM_FIELDS.AGENT_REMARK] = agentRemark;
+      }
+
+      // Create task payload
+      const taskPayload = {
+        workspace: ASANA_WORKSPACE,
+        projects: [ASANA_PROJECT],
+        name: contactName,
+        notes: taskNotes,
+      };
+
+      // Only add custom_fields if we have any configured
+      if (Object.keys(customFields).length > 0) {
+        taskPayload.custom_fields = customFields;
+      }
+
+      console.log(
+        'Creating Asana task with payload:',
+        JSON.stringify(taskPayload, null, 2)
+      );
 
       // Create Asana task
       const asanaResponse = await fetch('https://app.asana.com/api/1.0/tasks', {
@@ -365,12 +487,7 @@ Transaction Details:
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          data: {
-            workspace: ASANA_WORKSPACE,
-            projects: [ASANA_PROJECT],
-            name: contactName,
-            notes: taskNotes,
-          },
+          data: taskPayload,
         }),
       });
 
@@ -381,18 +498,29 @@ Transaction Details:
 
         // Upload attachment to Asana if available
         let attachmentPermanentUrl = null;
+        let attachmentStatus = null;
         if (attachmentUrl && attachmentUrl !== 'N/A') {
           console.log('Processing attachment:', attachmentUrl);
-          attachmentPermanentUrl = await uploadAttachmentToAsana(
-            asanaTaskId,
-            attachmentUrl
-          );
 
-          if (attachmentPermanentUrl) {
-            console.log(
-              'Attachment uploaded successfully:',
-              attachmentPermanentUrl
+          // Check if it's a valid URL before attempting upload
+          if (!isValidUrl(attachmentUrl)) {
+            console.log('Attachment field is not a valid URL, skipping upload');
+            attachmentStatus = 'invalid_url';
+          } else {
+            attachmentPermanentUrl = await uploadAttachmentToAsana(
+              asanaTaskId,
+              attachmentUrl
             );
+
+            if (attachmentPermanentUrl) {
+              console.log(
+                'Attachment uploaded successfully:',
+                attachmentPermanentUrl
+              );
+              attachmentStatus = 'success';
+            } else {
+              attachmentStatus = 'failed';
+            }
           }
         }
 
@@ -424,22 +552,39 @@ Transaction Details:
         ];
 
         // Add attachment status if attachment was processed
-        if (attachmentUrl) {
+        if (attachmentUrl && attachmentStatus) {
+          let statusText = '';
+          if (attachmentStatus === 'success') {
+            statusText = '✓ Attachment uploaded successfully';
+          } else if (attachmentStatus === 'invalid_url') {
+            statusText =
+              '⚠ Attachment field is not a valid URL (ID: ' +
+              attachmentUrl +
+              ')';
+          } else {
+            statusText = '⚠ Attachment upload failed';
+          }
+
           components.push({
             type: 'text',
             id: 'attachment_status',
-            text: attachmentPermanentUrl
-              ? `✓ Attachment uploaded successfully`
-              : `⚠ Attachment upload failed`,
+            text: statusText,
             align: 'center',
             style: 'paragraph',
           });
         }
 
+        const syncedFieldsText =
+          Object.keys(customFields).length > 0
+            ? `✓ Synced ${
+                Object.keys(customFields).length
+              } custom fields to Asana`
+            : '⚠ Configure ASANA_CUSTOM_FIELDS to sync custom fields';
+
         components.push({
           type: 'text',
           id: 'synced_fields',
-          text: 'Synced: Wallet, Payment Gateway, Transaction ID, Amount, Agent Remark',
+          text: syncedFieldsText,
           align: 'center',
           style: 'paragraph',
         });
