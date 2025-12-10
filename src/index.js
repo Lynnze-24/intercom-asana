@@ -567,23 +567,56 @@ app.post('/submit', async (req, res) => {
       const fullConversation = await getConversation(conversationId);
       const customAttrs = fullConversation?.custom_attributes || {};
 
-      // Extract attachments from conversation
-      console.log('Extracting attachments from conversation...');
-      const attachments = extractAttachmentUrls(fullConversation);
-      const attachmentUrl = attachments.length > 0 ? attachments[0].url : null;
-
-      if (attachmentUrl) {
-        console.log('Will use attachment URL:', attachmentUrl);
-      } else {
-        console.log('No attachments found in conversation');
-      }
-
-      // Extract the 5 custom fields (attachment is now from conversation parts)
+      // Extract the 5 custom fields
       const wallet = customAttrs.Wallet || '';
       const paymentGateway = customAttrs['Payment Gateway'] || '';
       const transactionID = customAttrs['Transaction ID'] || '';
       const amount = customAttrs.Amount || '';
       const agentRemark = customAttrs['Agent Remark'] || '';
+
+      // Handle attachment from custom attributes
+      // The attachment field in custom attributes may contain an ID or reference
+      const attachmentFieldValue = customAttrs.attachment;
+      let attachmentUrl = null;
+
+      console.log('Checking for attachment in custom attributes...');
+      console.log('Attachment field value:', attachmentFieldValue);
+
+      if (attachmentFieldValue) {
+        // If it's already a valid URL, use it directly
+        if (isValidUrl(attachmentFieldValue)) {
+          attachmentUrl = attachmentFieldValue;
+          console.log('Attachment field contains a direct URL:', attachmentUrl);
+        } else {
+          // If it's an ID, try to find the matching attachment in conversation parts
+          console.log(
+            'Attachment field appears to be an ID, searching conversation parts...'
+          );
+          const attachments = extractAttachmentUrls(fullConversation);
+
+          if (attachments.length > 0) {
+            // Use the first attachment found
+            attachmentUrl = attachments[0].url;
+            console.log(
+              'Found attachment URL from conversation parts:',
+              attachmentUrl
+            );
+          } else {
+            console.log(
+              'No matching attachment found in conversation parts for ID:',
+              attachmentFieldValue
+            );
+          }
+        }
+      } else {
+        console.log('No attachment field in custom attributes');
+      }
+
+      if (attachmentUrl) {
+        console.log('Will use attachment URL:', attachmentUrl);
+      } else {
+        console.log('No attachment to process');
+      }
 
       // Build basic task notes
       const taskNotes = `Task created from Intercom conversation ${conversationId}
