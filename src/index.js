@@ -14,15 +14,17 @@ const ASANA_TOKEN =
 const ASANA_WORKSPACE = '1211014974336131';
 const ASANA_PROJECT = '1212353369442239';
 
-// Asana Custom Field GIDs - You need to get these from your Asana project
-// To get custom field GIDs, go to: https://app.asana.com/api/1.0/projects/{ASANA_PROJECT}/custom_field_settings
+// Asana Custom Field GIDs - Will be automatically populated on server start
 const ASANA_CUSTOM_FIELDS = {
-  WALLET: null, // Replace with actual GID
-  PAYMENT_GATEWAY: null, // Replace with actual GID
-  TRANSACTION_ID: null, // Replace with actual GID
-  AMOUNT: null, // Replace with actual GID
-  AGENT_REMARK: null, // Replace with actual GID
+  WALLET: null,
+  PAYMENT_GATEWAY: null,
+  TRANSACTION_ID: null,
+  AMOUNT: null,
+  AGENT_REMARK: null,
 };
+
+// Cache for custom field mappings
+let customFieldsCache = null;
 
 // Intercom configuration
 const INTERCOM_TOKEN =
@@ -122,6 +124,55 @@ async function getConversation(conversationId) {
   }
 }
 
+// Helper function to extract attachment URLs from Intercom conversation
+function extractAttachmentUrls(conversation) {
+  const attachments = [];
+
+  // Check the main conversation message for attachments
+  if (
+    conversation.source &&
+    conversation.source.attachments &&
+    Array.isArray(conversation.source.attachments)
+  ) {
+    console.log(
+      'Found attachments in conversation source:',
+      conversation.source.attachments.length
+    );
+    attachments.push(...conversation.source.attachments);
+  }
+
+  // Check each conversation part for attachments
+  if (
+    conversation.conversation_parts &&
+    conversation.conversation_parts.conversation_parts &&
+    Array.isArray(conversation.conversation_parts.conversation_parts)
+  ) {
+    conversation.conversation_parts.conversation_parts.forEach(
+      (part, index) => {
+        if (part.attachments && Array.isArray(part.attachments)) {
+          console.log(
+            `Found attachments in conversation part ${index}:`,
+            part.attachments.length
+          );
+          attachments.push(...part.attachments);
+        }
+      }
+    );
+  }
+
+  console.log('Total attachments found:', attachments.length);
+
+  // Log each attachment
+  attachments.forEach((attachment, index) => {
+    console.log(`Attachment ${index + 1}:`);
+    console.log('  Name:', attachment.name);
+    console.log('  URL:', attachment.url);
+    console.log('  Content Type:', attachment.content_type);
+  });
+
+  return attachments;
+}
+
 // Helper function to update Intercom conversation custom attributes
 async function updateConversationAttribute(conversationId, asanaTaskId) {
   try {
@@ -173,12 +224,76 @@ async function getAsanaCustomFields() {
 
     if (response.ok) {
       const data = await response.json();
-      console.log('Custom field settings:', JSON.stringify(data, null, 2));
       return data.data;
     }
     return null;
   } catch (error) {
     console.error('Error fetching custom fields:', error);
+    return null;
+  }
+}
+
+// Helper function to initialize custom field mappings
+async function initializeCustomFieldMappings() {
+  try {
+    console.log('Fetching Asana custom field mappings...');
+    const customFieldSettings = await getAsanaCustomFields();
+
+    if (!customFieldSettings || customFieldSettings.length === 0) {
+      console.warn('⚠ No custom fields found in Asana project');
+      console.warn(
+        'Custom field syncing will be disabled. Please add custom fields to your Asana project.'
+      );
+      return null;
+    }
+
+    const mappings = {};
+    const fieldNames = {
+      Wallet: 'WALLET',
+      'Payment Gateway': 'PAYMENT_GATEWAY',
+      'Transaction ID': 'TRANSACTION_ID',
+      Amount: 'AMOUNT',
+      'Agent Remark': 'AGENT_REMARK',
+    };
+
+    // Map custom field names to their GIDs
+    customFieldSettings.forEach((setting) => {
+      const fieldName = setting.custom_field.name;
+      const fieldGid = setting.custom_field.gid;
+
+      if (fieldNames[fieldName]) {
+        const mappingKey = fieldNames[fieldName];
+        mappings[mappingKey] = fieldGid;
+        console.log(`✓ Mapped "${fieldName}" → ${fieldGid}`);
+      }
+    });
+
+    // Update the global ASANA_CUSTOM_FIELDS object
+    Object.keys(mappings).forEach((key) => {
+      ASANA_CUSTOM_FIELDS[key] = mappings[key];
+    });
+
+    // Check which fields are missing
+    const missingFields = Object.keys(fieldNames).filter(
+      (name) => !mappings[fieldNames[name]]
+    );
+
+    if (missingFields.length > 0) {
+      console.warn(
+        '⚠ Missing custom fields in Asana project:',
+        missingFields.join(', ')
+      );
+      console.warn(
+        'Please create these fields in your Asana project for full syncing.'
+      );
+    } else {
+      console.log('✓ All custom fields mapped successfully');
+    }
+
+    customFieldsCache = mappings;
+    return mappings;
+  } catch (error) {
+    console.error('Error initializing custom field mappings:', error);
     return null;
   }
 }
@@ -206,7 +321,10 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
     }
 
     // Download the file from the attachment URL
-    console.log('Downloading attachment from:', attachmentUrl);
+    console.log('===== ATTACHMENT DOWNLOAD PROCESS =====');
+    console.log('Full attachment URL:', attachmentUrl);
+    console.log('Attempting to download...');
+
     const fileResponse = await fetch(attachmentUrl);
 
     if (!fileResponse.ok) {
@@ -214,8 +332,13 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
         'Failed to download attachment. Status:',
         fileResponse.status
       );
+      console.error('Status Text:', fileResponse.statusText);
       return null;
     }
+
+    console.log('✓ Successfully downloaded attachment');
+    console.log('Content-Type:', fileResponse.headers.get('content-type'));
+    console.log('Content-Length:', fileResponse.headers.get('content-length'));
 
     // Get the file buffer and content type
     const fileBuffer = await fileResponse.buffer();
@@ -236,7 +359,12 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
     });
 
     // Upload to Asana
-    console.log('Uploading attachment to Asana task:', taskId);
+    console.log('===== ASANA UPLOAD PROCESS =====');
+    console.log('Uploading to Asana task ID:', taskId);
+    console.log('File name:', fileName);
+    console.log('Content type:', contentType);
+    console.log('File size:', fileBuffer.length, 'bytes');
+
     const asanaResponse = await fetch(
       'https://app.asana.com/api/1.0/attachments',
       {
@@ -251,11 +379,16 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
 
     if (asanaResponse.ok) {
       const asanaData = await asanaResponse.json();
-      console.log('Successfully uploaded attachment to Asana');
-      return asanaData.data.permanent_url || asanaData.data.download_url;
+      const permanentUrl =
+        asanaData.data.permanent_url || asanaData.data.download_url;
+      console.log('✓ Successfully uploaded attachment to Asana');
+      console.log('Asana permanent URL:', permanentUrl);
+      console.log('======================================');
+      return permanentUrl;
     } else {
       const errorData = await asanaResponse.json();
-      console.error('Error uploading attachment to Asana:', errorData);
+      console.error('✗ Error uploading attachment to Asana:', errorData);
+      console.error('======================================');
       return null;
     }
   } catch (error) {
@@ -269,7 +402,7 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Helper endpoint to get custom field GIDs
+// Helper endpoint to get custom field GIDs and current mappings
 app.get('/asana-custom-fields', async (req, res) => {
   try {
     const customFieldSettings = await getAsanaCustomFields();
@@ -285,9 +418,16 @@ app.get('/asana-custom-fields', async (req, res) => {
       res.json({
         success: true,
         project_id: ASANA_PROJECT,
-        custom_fields: fields,
+        all_custom_fields: fields,
+        mapped_fields: {
+          WALLET: ASANA_CUSTOM_FIELDS.WALLET,
+          PAYMENT_GATEWAY: ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY,
+          TRANSACTION_ID: ASANA_CUSTOM_FIELDS.TRANSACTION_ID,
+          AMOUNT: ASANA_CUSTOM_FIELDS.AMOUNT,
+          AGENT_REMARK: ASANA_CUSTOM_FIELDS.AGENT_REMARK,
+        },
         message:
-          'Copy these GIDs to the ASANA_CUSTOM_FIELDS object in index.js',
+          'Custom fields are automatically mapped on server start. Check mapped_fields to see current mappings.',
       });
     } else {
       res.json({
@@ -423,12 +563,22 @@ app.post('/submit', async (req, res) => {
         }
       }
 
-      // Get full conversation details to access custom attributes
+      // Get full conversation details to access custom attributes and attachments
       const fullConversation = await getConversation(conversationId);
       const customAttrs = fullConversation?.custom_attributes || {};
 
-      // Extract the 6 custom fields
-      const attachmentUrl = customAttrs.attachment || null;
+      // Extract attachments from conversation
+      console.log('Extracting attachments from conversation...');
+      const attachments = extractAttachmentUrls(fullConversation);
+      const attachmentUrl = attachments.length > 0 ? attachments[0].url : null;
+
+      if (attachmentUrl) {
+        console.log('Will use attachment URL:', attachmentUrl);
+      } else {
+        console.log('No attachments found in conversation');
+      }
+
+      // Extract the 5 custom fields (attachment is now from conversation parts)
       const wallet = customAttrs.Wallet || '';
       const paymentGateway = customAttrs['Payment Gateway'] || '';
       const transactionID = customAttrs['Transaction ID'] || '';
@@ -441,6 +591,12 @@ app.post('/submit', async (req, res) => {
 Contact Information:
 - Name: ${contactName}
 - Email: ${req.body.contact?.email || req.body.customer?.email || 'N/A'}`;
+
+      // Ensure custom fields are initialized (fallback if server start failed)
+      if (!customFieldsCache) {
+        console.log('Custom fields not initialized, initializing now...');
+        await initializeCustomFieldMappings();
+      }
 
       // Build custom fields object for Asana
       const customFields = {};
@@ -459,6 +615,11 @@ Contact Information:
       }
       if (ASANA_CUSTOM_FIELDS.AGENT_REMARK && agentRemark) {
         customFields[ASANA_CUSTOM_FIELDS.AGENT_REMARK] = agentRemark;
+      }
+
+      console.log('Custom fields to sync:', Object.keys(customFields).length);
+      if (Object.keys(customFields).length > 0) {
+        console.log('Custom field values:', customFields);
       }
 
       // Create task payload
@@ -500,13 +661,18 @@ Contact Information:
         let attachmentPermanentUrl = null;
         let attachmentStatus = null;
         if (attachmentUrl && attachmentUrl !== 'N/A') {
-          console.log('Processing attachment:', attachmentUrl);
+          console.log('\n===== ATTACHMENT PROCESSING =====');
+          console.log('Found attachment to process');
+          console.log('Attachment URL:', attachmentUrl);
 
           // Check if it's a valid URL before attempting upload
           if (!isValidUrl(attachmentUrl)) {
-            console.log('Attachment field is not a valid URL, skipping upload');
+            console.log(
+              '⚠ Attachment field is not a valid URL, skipping upload'
+            );
             attachmentStatus = 'invalid_url';
           } else {
+            console.log('✓ Valid URL detected, proceeding with upload');
             attachmentPermanentUrl = await uploadAttachmentToAsana(
               asanaTaskId,
               attachmentUrl
@@ -514,14 +680,18 @@ Contact Information:
 
             if (attachmentPermanentUrl) {
               console.log(
-                'Attachment uploaded successfully:',
+                '✓ Final attachment permanent URL:',
                 attachmentPermanentUrl
               );
               attachmentStatus = 'success';
             } else {
+              console.log('✗ Attachment upload failed');
               attachmentStatus = 'failed';
             }
           }
+          console.log('==================================\n');
+        } else {
+          console.log('No attachments to process for this task');
         }
 
         // Save Asana task ID to Intercom conversation
@@ -634,7 +804,14 @@ Contact Information:
   }
 });
 
-const listener = app.listen(PORT, () => {
+const listener = app.listen(PORT, async () => {
   console.log(`Your app is listening on port ${PORT}`);
   console.log(`Visit http://localhost:${PORT} to view your app`);
+  console.log('\n========================================');
+
+  // Initialize custom field mappings from Asana
+  await initializeCustomFieldMappings();
+
+  console.log('========================================\n');
+  console.log('✓ Server is ready to accept requests');
 });
