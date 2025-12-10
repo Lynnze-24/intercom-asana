@@ -3,6 +3,7 @@ import bodyParser from 'body-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
+import FormData from 'form-data';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,8 +14,9 @@ const ASANA_TOKEN =
 const ASANA_WORKSPACE = '1211014974336131';
 const ASANA_PROJECT = '1212353369442239';
 
-// Track conversations that have already submitted
-const submittedConversations = new Set();
+// Intercom configuration
+const INTERCOM_TOKEN =
+  'dG9rOmQxMmIxYTQxXzcwMDhfNGE2Ml9iODU1XzQ5MjFkNjA4NWRlZDoxOjA=';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -59,6 +61,151 @@ const initialCanvas = {
   },
 };
 
+// Helper function to get contact name from Intercom API
+async function getContactName(contactId) {
+  try {
+    const response = await fetch(
+      `https://api.intercom.io/contacts/${contactId}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${INTERCOM_TOKEN}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.name || 'Unknown Contact';
+    }
+    return 'Unknown Contact';
+  } catch (error) {
+    console.error('Error fetching contact from Intercom:', error);
+    return 'Unknown Contact';
+  }
+}
+
+// Helper function to get conversation details from Intercom API
+async function getConversation(conversationId) {
+  try {
+    const response = await fetch(
+      `https://api.intercom.io/conversations/${conversationId}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${INTERCOM_TOKEN}`,
+          'Intercom-Version': '2.11',
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      return data;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error fetching conversation from Intercom:', error);
+    return null;
+  }
+}
+
+// Helper function to update Intercom conversation custom attributes
+async function updateConversationAttribute(conversationId, asanaTaskId) {
+  try {
+    const response = await fetch(
+      `https://api.intercom.io/conversations/${conversationId}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${INTERCOM_TOKEN}`,
+          'Intercom-Version': '2.11',
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          custom_attributes: {
+            AsanaTaskID: asanaTaskId,
+          },
+        }),
+      }
+    );
+
+    if (response.ok) {
+      console.log('Successfully updated conversation with Asana task ID');
+      return true;
+    } else {
+      const errorData = await response.json();
+      console.error('Error updating conversation:', errorData);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error updating conversation attribute:', error);
+    return false;
+  }
+}
+
+// Helper function to upload attachment to Asana task
+async function uploadAttachmentToAsana(taskId, attachmentUrl) {
+  try {
+    // Download the file from the attachment URL
+    console.log('Downloading attachment from:', attachmentUrl);
+    const fileResponse = await fetch(attachmentUrl);
+
+    if (!fileResponse.ok) {
+      console.error('Failed to download attachment');
+      return null;
+    }
+
+    // Get the file buffer and content type
+    const fileBuffer = await fileResponse.buffer();
+    const contentType =
+      fileResponse.headers.get('content-type') || 'application/octet-stream';
+
+    // Extract filename from URL or use a default
+    const urlParts = attachmentUrl.split('/');
+    const fileName =
+      urlParts[urlParts.length - 1].split('?')[0] || 'attachment';
+
+    // Create form data for multipart upload
+    const formData = new FormData();
+    formData.append('parent', taskId);
+    formData.append('file', fileBuffer, {
+      filename: fileName,
+      contentType: contentType,
+    });
+
+    // Upload to Asana
+    console.log('Uploading attachment to Asana task:', taskId);
+    const asanaResponse = await fetch(
+      'https://app.asana.com/api/1.0/attachments',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ASANA_TOKEN}`,
+          ...formData.getHeaders(),
+        },
+        body: formData,
+      }
+    );
+
+    if (asanaResponse.ok) {
+      const asanaData = await asanaResponse.json();
+      console.log('Successfully uploaded attachment to Asana');
+      return asanaData.data.permanent_url || asanaData.data.download_url;
+    } else {
+      const errorData = await asanaResponse.json();
+      console.error('Error uploading attachment to Asana:', errorData);
+      return null;
+    }
+  } catch (error) {
+    console.error('Error in uploadAttachmentToAsana:', error);
+    return null;
+  }
+}
+
 // Root route - serves the HTML file
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -68,8 +215,53 @@ app.get('/', (req, res) => {
   This is an endpoint that Intercom will POST HTTP request when a teammate inserts 
   the app into the inbox, or a new conversation is viewed.
 */
-app.post('/initialize', (req, res) => {
+app.post('/initialize', async (req, res) => {
   console.log('Initialize endpoint hit');
+  console.log('Initialize request body:', JSON.stringify(req.body, null, 2));
+
+  const conversationId = req.body.conversation?.id;
+
+  // Check if this conversation already has an Asana task
+  if (conversationId) {
+    const conversation = await getConversation(conversationId);
+    const asanaTaskId = conversation?.custom_attributes?.AsanaTaskID;
+
+    if (asanaTaskId) {
+      // Conversation already has an Asana task, show completed state
+      const completedCanvas = {
+        canvas: {
+          content: {
+            components: [
+              {
+                type: 'text',
+                id: 'success',
+                text: '✓ Asana Task Already Created',
+                align: 'center',
+                style: 'header',
+              },
+              {
+                type: 'text',
+                id: 'task_id',
+                text: `Task ID: ${asanaTaskId}`,
+                align: 'center',
+                style: 'paragraph',
+              },
+              {
+                type: 'text',
+                id: 'info',
+                text: 'This conversation already has an Asana task associated with it.',
+                align: 'center',
+                style: 'paragraph',
+              },
+            ],
+          },
+        },
+      };
+      return res.send(completedCanvas);
+    }
+  }
+
+  // No existing task, show create button
   res.send(initialCanvas);
 });
 
@@ -82,40 +274,88 @@ app.post('/submit', async (req, res) => {
   console.log('Submit endpoint hit with component_id:', req.body.component_id);
   console.log('Request body:', JSON.stringify(req.body, null, 2));
 
-  const conversationId = req.body.conversation_id;
+  const conversationId = req.body.conversation?.id;
 
-  // Check if this conversation has already submitted
-  if (submittedConversations.has(conversationId)) {
-    const alreadySubmittedCanvas = {
-      canvas: {
-        content: {
-          components: [
-            {
-              type: 'text',
-              id: 'already_submitted',
-              text: 'Task already created for this conversation',
-              align: 'center',
-              style: 'header',
-            },
-            {
-              type: 'text',
-              id: 'info',
-              text: 'You can only create one Asana task per conversation.',
-              align: 'center',
-              style: 'paragraph',
-            },
-          ],
+  // Check if this conversation already has an Asana task
+  if (conversationId) {
+    const conversation = await getConversation(conversationId);
+    const existingTaskId = conversation?.custom_attributes?.AsanaTaskID;
+
+    if (existingTaskId) {
+      const alreadySubmittedCanvas = {
+        canvas: {
+          content: {
+            components: [
+              {
+                type: 'text',
+                id: 'already_submitted',
+                text: 'Task already created for this conversation',
+                align: 'center',
+                style: 'header',
+              },
+              {
+                type: 'text',
+                id: 'task_id',
+                text: `Task ID: ${existingTaskId}`,
+                align: 'center',
+                style: 'paragraph',
+              },
+              {
+                type: 'text',
+                id: 'info',
+                text: 'You can only create one Asana task per conversation.',
+                align: 'center',
+                style: 'paragraph',
+              },
+            ],
+          },
         },
-      },
-    };
-    return res.send(alreadySubmittedCanvas);
+      };
+      return res.send(alreadySubmittedCanvas);
+    }
   }
 
   if (req.body.component_id === 'submit_button') {
     try {
       // Extract contact name from Intercom data
-      const contactName =
-        req.body.user?.name || req.body.admin?.name || 'Unknown Contact';
+      let contactName =
+        req.body.contact?.name || req.body.customer?.name || null;
+
+      // If no name in request body, fetch from Intercom API
+      if (!contactName) {
+        const contactId = req.body.contact?.id || req.body.customer?.id;
+        if (contactId) {
+          contactName = await getContactName(contactId);
+        } else {
+          contactName = 'Unknown Contact';
+        }
+      }
+
+      // Get full conversation details to access custom attributes
+      const fullConversation = await getConversation(conversationId);
+      const customAttrs = fullConversation?.custom_attributes || {};
+
+      // Extract the 6 custom fields
+      const attachmentUrl = customAttrs.attachment || null;
+      const wallet = customAttrs.Wallet || 'N/A';
+      const paymentGateway = customAttrs['Payment Gateway'] || 'N/A';
+      const transactionID = customAttrs['Transaction ID'] || 'N/A';
+      const amount = customAttrs.Amount || 'N/A';
+      const agentRemark = customAttrs['Agent Remark'] || 'N/A';
+
+      // Build comprehensive notes with all fields
+      const taskNotes = `Task created from Intercom conversation ${conversationId}
+
+Contact Information:
+- Name: ${contactName}
+- Email: ${req.body.contact?.email || req.body.customer?.email || 'N/A'}
+
+Transaction Details:
+- Wallet: ${wallet}
+- Payment Gateway: ${paymentGateway}
+- Transaction ID: ${transactionID}
+- Amount: ${amount}
+- Agent Remark: ${agentRemark}`;
 
       // Create Asana task
       const asanaResponse = await fetch('https://app.asana.com/api/1.0/tasks', {
@@ -129,7 +369,7 @@ app.post('/submit', async (req, res) => {
             workspace: ASANA_WORKSPACE,
             projects: [ASANA_PROJECT],
             name: contactName,
-            notes: `Task created from Intercom conversation ${conversationId}`,
+            notes: taskNotes,
           },
         }),
       });
@@ -137,35 +377,77 @@ app.post('/submit', async (req, res) => {
       const asanaData = await asanaResponse.json();
 
       if (asanaResponse.ok) {
-        // Mark this conversation as submitted
-        submittedConversations.add(conversationId);
+        const asanaTaskId = asanaData.data.gid;
+
+        // Upload attachment to Asana if available
+        let attachmentPermanentUrl = null;
+        if (attachmentUrl && attachmentUrl !== 'N/A') {
+          console.log('Processing attachment:', attachmentUrl);
+          attachmentPermanentUrl = await uploadAttachmentToAsana(
+            asanaTaskId,
+            attachmentUrl
+          );
+
+          if (attachmentPermanentUrl) {
+            console.log(
+              'Attachment uploaded successfully:',
+              attachmentPermanentUrl
+            );
+          }
+        }
+
+        // Save Asana task ID to Intercom conversation
+        await updateConversationAttribute(conversationId, asanaTaskId);
+
+        const components = [
+          {
+            type: 'text',
+            id: 'success',
+            text: '✓ Asana Task Created',
+            align: 'center',
+            style: 'header',
+          },
+          {
+            type: 'text',
+            id: 'task_name',
+            text: `Task: ${contactName}`,
+            align: 'center',
+            style: 'paragraph',
+          },
+          {
+            type: 'text',
+            id: 'task_id',
+            text: `Task ID: ${asanaTaskId}`,
+            align: 'center',
+            style: 'paragraph',
+          },
+        ];
+
+        // Add attachment status if attachment was processed
+        if (attachmentUrl) {
+          components.push({
+            type: 'text',
+            id: 'attachment_status',
+            text: attachmentPermanentUrl
+              ? `✓ Attachment uploaded successfully`
+              : `⚠ Attachment upload failed`,
+            align: 'center',
+            style: 'paragraph',
+          });
+        }
+
+        components.push({
+          type: 'text',
+          id: 'synced_fields',
+          text: 'Synced: Wallet, Payment Gateway, Transaction ID, Amount, Agent Remark',
+          align: 'center',
+          style: 'paragraph',
+        });
 
         const successCanvas = {
           canvas: {
             content: {
-              components: [
-                {
-                  type: 'text',
-                  id: 'success',
-                  text: '✓ Asana Task Created',
-                  align: 'center',
-                  style: 'header',
-                },
-                {
-                  type: 'text',
-                  id: 'task_name',
-                  text: `Task: ${contactName}`,
-                  align: 'center',
-                  style: 'paragraph',
-                },
-                {
-                  type: 'text',
-                  id: 'task_id',
-                  text: `Task ID: ${asanaData.data.gid}`,
-                  align: 'center',
-                  style: 'paragraph',
-                },
-              ],
+              components: components,
             },
           },
         };
