@@ -599,27 +599,30 @@ Contact Information:
       }
 
       // Build custom fields object for Asana
+      // All values must be converted to strings for Asana API
       const customFields = {};
 
       if (ASANA_CUSTOM_FIELDS.WALLET && wallet) {
-        customFields[ASANA_CUSTOM_FIELDS.WALLET] = wallet;
+        customFields[ASANA_CUSTOM_FIELDS.WALLET] = String(wallet);
       }
       if (ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY && paymentGateway) {
-        customFields[ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY] = paymentGateway;
+        customFields[ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY] =
+          String(paymentGateway);
       }
       if (ASANA_CUSTOM_FIELDS.TRANSACTION_ID && transactionID) {
-        customFields[ASANA_CUSTOM_FIELDS.TRANSACTION_ID] = transactionID;
+        customFields[ASANA_CUSTOM_FIELDS.TRANSACTION_ID] =
+          String(transactionID);
       }
       if (ASANA_CUSTOM_FIELDS.AMOUNT && amount) {
-        customFields[ASANA_CUSTOM_FIELDS.AMOUNT] = amount;
+        customFields[ASANA_CUSTOM_FIELDS.AMOUNT] = String(amount);
       }
       if (ASANA_CUSTOM_FIELDS.AGENT_REMARK && agentRemark) {
-        customFields[ASANA_CUSTOM_FIELDS.AGENT_REMARK] = agentRemark;
+        customFields[ASANA_CUSTOM_FIELDS.AGENT_REMARK] = String(agentRemark);
       }
 
       console.log('Custom fields to sync:', Object.keys(customFields).length);
       if (Object.keys(customFields).length > 0) {
-        console.log('Custom field values:', customFields);
+        console.log('Custom field values (as strings):', customFields);
       }
 
       // Create task payload
