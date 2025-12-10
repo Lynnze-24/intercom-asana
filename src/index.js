@@ -21,6 +21,7 @@ const ASANA_CUSTOM_FIELDS = {
   TRANSACTION_ID: null,
   AMOUNT: null,
   AGENT_REMARK: null,
+  INTERCOM_CONVERSATION_ID: null, // For webhook sync back to Intercom
 };
 
 // Cache for custom field mappings
@@ -305,6 +306,7 @@ async function initializeCustomFieldMappings() {
       'Transaction ID': 'TRANSACTION_ID',
       Amount: 'AMOUNT',
       'Agent Remark': 'AGENT_REMARK',
+      intercomConversationId: 'INTERCOM_CONVERSATION_ID',
     };
 
     // Map custom field names to their GIDs
@@ -476,6 +478,8 @@ app.get('/asana-custom-fields', async (req, res) => {
           TRANSACTION_ID: ASANA_CUSTOM_FIELDS.TRANSACTION_ID,
           AMOUNT: ASANA_CUSTOM_FIELDS.AMOUNT,
           AGENT_REMARK: ASANA_CUSTOM_FIELDS.AGENT_REMARK,
+          INTERCOM_CONVERSATION_ID:
+            ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID,
         },
         message:
           'Custom fields are automatically mapped on server start. Check mapped_fields to see current mappings.',
@@ -754,6 +758,15 @@ Contact Information:
       if (ASANA_CUSTOM_FIELDS.AGENT_REMARK && agentRemark) {
         customFields[ASANA_CUSTOM_FIELDS.AGENT_REMARK] = String(agentRemark);
       }
+      // Add Intercom conversation ID for webhook sync
+      if (ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID && conversationId) {
+        customFields[ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID] =
+          String(conversationId);
+        console.log(
+          'Adding conversation ID to Asana custom field:',
+          conversationId
+        );
+      }
 
       console.log('Custom fields to sync:', Object.keys(customFields).length);
       if (Object.keys(customFields).length > 0) {
@@ -994,17 +1007,7 @@ app.post('/asana-webhook', async (req, res) => {
         const taskId = event.resource.gid;
         console.log('  Task changed event for task:', taskId);
 
-        // Check if we have this task mapped to a conversation
-        const conversationId = asanaTaskToConversation.get(taskId);
-
-        if (!conversationId) {
-          console.log('  ⚠ No conversation mapping found for this task');
-          continue;
-        }
-
-        console.log('  Found conversation mapping:', conversationId);
-
-        // Fetch the task to check completion status
+        // Fetch the task to get completion status and conversation ID
         console.log('  Fetching task details from Asana...');
         const taskResponse = await fetch(
           `https://app.asana.com/api/1.0/tasks/${taskId}`,
@@ -1022,6 +1025,38 @@ app.post('/asana-webhook', async (req, res) => {
           const isCompleted = taskData.data.completed;
 
           console.log('  Task completion status:', isCompleted);
+
+          // Get conversation ID from custom fields
+          let conversationId = null;
+          const customFields = taskData.data.custom_fields || [];
+
+          for (const field of customFields) {
+            if (field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID) {
+              conversationId = field.text_value || field.display_value;
+              console.log(
+                '  Found conversation ID in custom field:',
+                conversationId
+              );
+              break;
+            }
+          }
+
+          // Fallback to in-memory map if custom field not found
+          if (!conversationId) {
+            conversationId = asanaTaskToConversation.get(taskId);
+            if (conversationId) {
+              console.log(
+                '  Found conversation ID in memory map:',
+                conversationId
+              );
+            }
+          }
+
+          if (!conversationId) {
+            console.log('  ⚠ No conversation ID found for this task');
+            console.log('  Skipping webhook update');
+            continue;
+          }
 
           // Update Intercom conversation based on completion status
           if (isCompleted) {
