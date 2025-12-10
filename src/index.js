@@ -30,6 +30,12 @@ let customFieldsCache = null;
 const INTERCOM_TOKEN =
   'dG9rOmQxMmIxYTQxXzcwMDhfNGE2Ml9iODU1XzQ5MjFkNjA4NWRlZDoxOjA=';
 
+// Asana webhook secret (will be set during webhook handshake)
+let asanaWebhookSecret = null;
+
+// Map to store Asana task ID to Intercom conversation ID
+const asanaTaskToConversation = new Map();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -124,21 +130,19 @@ async function getConversation(conversationId) {
   }
 }
 
-// Helper function to extract attachment URLs from Intercom conversation
-function extractAttachmentUrls(conversation) {
-  const attachments = [];
+// Helper function to find attachment URL by ID from Intercom conversation
+function findAttachmentUrlById(conversation, attachmentId) {
+  console.log('Searching for attachment with ID:', attachmentId);
 
-  // Check the main conversation message for attachments
+  const allAttachments = [];
+
+  // Check the main conversation source for attachments
   if (
     conversation.source &&
     conversation.source.attachments &&
     Array.isArray(conversation.source.attachments)
   ) {
-    console.log(
-      'Found attachments in conversation source:',
-      conversation.source.attachments.length
-    );
-    attachments.push(...conversation.source.attachments);
+    allAttachments.push(...conversation.source.attachments);
   }
 
   // Check each conversation part for attachments
@@ -147,30 +151,38 @@ function extractAttachmentUrls(conversation) {
     conversation.conversation_parts.conversation_parts &&
     Array.isArray(conversation.conversation_parts.conversation_parts)
   ) {
-    conversation.conversation_parts.conversation_parts.forEach(
-      (part, index) => {
-        if (part.attachments && Array.isArray(part.attachments)) {
-          console.log(
-            `Found attachments in conversation part ${index}:`,
-            part.attachments.length
-          );
-          attachments.push(...part.attachments);
-        }
+    conversation.conversation_parts.conversation_parts.forEach((part) => {
+      if (part.attachments && Array.isArray(part.attachments)) {
+        allAttachments.push(...part.attachments);
       }
-    );
+    });
   }
 
-  console.log('Total attachments found:', attachments.length);
+  console.log(
+    `Total attachments found in conversation: ${allAttachments.length}`
+  );
 
-  // Log each attachment
-  attachments.forEach((attachment, index) => {
-    console.log(`Attachment ${index + 1}:`);
-    console.log('  Name:', attachment.name);
-    console.log('  URL:', attachment.url);
-    console.log('  Content Type:', attachment.content_type);
-  });
+  // Try to find attachment by matching the ID in the URL
+  for (const attachment of allAttachments) {
+    console.log(
+      'Checking attachment:',
+      attachment.name,
+      'URL:',
+      attachment.url
+    );
 
-  return attachments;
+    // Check if the attachment ID appears in the URL
+    if (attachment.url && attachment.url.includes(String(attachmentId))) {
+      console.log('✓ Found matching attachment!');
+      console.log('  Name:', attachment.name);
+      console.log('  URL:', attachment.url);
+      console.log('  Content Type:', attachment.content_type);
+      return attachment.url;
+    }
+  }
+
+  console.log('✗ No attachment found with ID:', attachmentId);
+  return null;
 }
 
 // Helper function to update Intercom conversation custom attributes
@@ -204,6 +216,45 @@ async function updateConversationAttribute(conversationId, asanaTaskId) {
     }
   } catch (error) {
     console.error('Error updating conversation attribute:', error);
+    return false;
+  }
+}
+
+// Helper function to update Intercom conversation asanaStatus field
+async function updateConversationAsanaStatus(conversationId, status) {
+  try {
+    console.log(
+      `Updating conversation ${conversationId} asanaStatus to: "${status}"`
+    );
+
+    const response = await fetch(
+      `https://api.intercom.io/conversations/${conversationId}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${INTERCOM_TOKEN}`,
+          'Intercom-Version': '2.11',
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          custom_attributes: {
+            asanaStatus: status,
+          },
+        }),
+      }
+    );
+
+    if (response.ok) {
+      console.log(`✓ Successfully updated asanaStatus to "${status}"`);
+      return true;
+    } else {
+      const errorData = await response.json();
+      console.error('✗ Error updating asanaStatus:', errorData);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error updating asanaStatus:', error);
     return false;
   }
 }
@@ -443,6 +494,36 @@ app.get('/asana-custom-fields', async (req, res) => {
   }
 });
 
+// Helper endpoint to view webhook setup information
+app.get('/webhook-info', (req, res) => {
+  const webhookUrl = `${req.protocol}://${req.get('host')}/asana-webhook`;
+
+  res.json({
+    success: true,
+    webhook_url: webhookUrl,
+    webhook_secret_stored: asanaWebhookSecret ? true : false,
+    project_gid: ASANA_PROJECT,
+    setup_instructions: {
+      step1:
+        'Make sure this server is publicly accessible (use ngrok for local development)',
+      step2: `Create webhook using: POST https://app.asana.com/api/1.0/webhooks`,
+      step3: 'Set resource to your project GID',
+      step4: `Set target to: ${webhookUrl}`,
+      step5: 'The handshake will be completed automatically',
+    },
+    curl_example: `curl -X POST https://app.asana.com/api/1.0/webhooks \\
+  -H "Authorization: Bearer ${ASANA_TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "data": {
+      "resource": "${ASANA_PROJECT}",
+      "target": "${webhookUrl}"
+    }
+  }'`,
+    task_to_conversation_mappings: asanaTaskToConversation.size,
+  });
+});
+
 /*
   This is an endpoint that Intercom will POST HTTP request when a teammate inserts 
   the app into the inbox, or a new conversation is viewed.
@@ -575,48 +656,69 @@ app.post('/submit', async (req, res) => {
       const agentRemark = customAttrs['Agent Remark'] || '';
 
       // Handle attachment from custom attributes
-      // The attachment field in custom attributes may contain an ID or reference
-      const attachmentFieldValue = customAttrs.attachment;
+      // The attachment custom field can be a single ID, an array of IDs, or a URL
+      let attachmentFieldValue = customAttrs.attachment;
+      let attachmentId = null;
       let attachmentUrl = null;
 
-      console.log('Checking for attachment in custom attributes...');
-      console.log('Attachment field value:', attachmentFieldValue);
+      console.log('\n===== ATTACHMENT PROCESSING FROM CUSTOM FIELD =====');
+      console.log(
+        'Attachment field raw value:',
+        JSON.stringify(attachmentFieldValue)
+      );
+      console.log('Attachment field type:', typeof attachmentFieldValue);
+      console.log('Is array:', Array.isArray(attachmentFieldValue));
 
-      if (attachmentFieldValue) {
+      // Handle array format (Intercom file fields return arrays)
+      if (
+        Array.isArray(attachmentFieldValue) &&
+        attachmentFieldValue.length > 0
+      ) {
+        attachmentId = attachmentFieldValue[0]; // Take first attachment
+        console.log(
+          'Attachment is an array, using first element:',
+          attachmentId
+        );
+      } else if (attachmentFieldValue) {
+        attachmentId = attachmentFieldValue;
+        console.log('Attachment is a single value:', attachmentId);
+      }
+
+      if (attachmentId) {
         // If it's already a valid URL, use it directly
-        if (isValidUrl(attachmentFieldValue)) {
-          attachmentUrl = attachmentFieldValue;
-          console.log('Attachment field contains a direct URL:', attachmentUrl);
+        if (isValidUrl(String(attachmentId))) {
+          attachmentUrl = String(attachmentId);
+          console.log('✓ Attachment field already contains full URL');
         } else {
-          // If it's an ID, try to find the matching attachment in conversation parts
+          // It's an ID, find the matching attachment in conversation to get full URL
           console.log(
-            'Attachment field appears to be an ID, searching conversation parts...'
+            'Searching conversation for attachment with ID:',
+            attachmentId
           );
-          const attachments = extractAttachmentUrls(fullConversation);
+          attachmentUrl = findAttachmentUrlById(fullConversation, attachmentId);
 
-          if (attachments.length > 0) {
-            // Use the first attachment found
-            attachmentUrl = attachments[0].url;
-            console.log(
-              'Found attachment URL from conversation parts:',
-              attachmentUrl
-            );
+          if (attachmentUrl) {
+            console.log('✓ Successfully found attachment URL');
           } else {
+            console.log('✗ Could not find attachment with ID:', attachmentId);
             console.log(
-              'No matching attachment found in conversation parts for ID:',
-              attachmentFieldValue
+              'The attachment may not be present in the conversation response'
+            );
+            console.log(
+              'This might happen if the conversation needs to be re-fetched'
             );
           }
         }
       } else {
-        console.log('No attachment field in custom attributes');
+        console.log('No attachment ID in custom attributes');
       }
 
       if (attachmentUrl) {
-        console.log('Will use attachment URL:', attachmentUrl);
+        console.log('Final attachment URL to use:', attachmentUrl);
       } else {
-        console.log('No attachment to process');
+        console.log('No attachment to process for this task');
       }
+      console.log('==================================================\n');
 
       // Build basic task notes
       const taskNotes = `Task created from Intercom conversation ${conversationId}
@@ -733,6 +835,12 @@ Contact Information:
         // Save Asana task ID to Intercom conversation
         await updateConversationAttribute(conversationId, asanaTaskId);
 
+        // Store mapping for webhook callbacks
+        asanaTaskToConversation.set(asanaTaskId, conversationId);
+        console.log(
+          `Stored mapping: Asana task ${asanaTaskId} → Intercom conversation ${conversationId}`
+        );
+
         const components = [
           {
             type: 'text',
@@ -837,6 +945,103 @@ Contact Information:
     }
   } else {
     res.send(initialCanvas);
+  }
+});
+
+/*
+  Asana webhook endpoint to receive task completion updates
+  Handles the handshake and task status change events
+*/
+app.post('/asana-webhook', async (req, res) => {
+  const hookSecret = req.headers['x-hook-secret'];
+
+  // Handle webhook handshake
+  if (hookSecret) {
+    console.log('===== ASANA WEBHOOK HANDSHAKE =====');
+    console.log('Received webhook handshake with secret:', hookSecret);
+
+    // Store the secret for future verification
+    asanaWebhookSecret = hookSecret;
+
+    // Respond with the secret to complete handshake
+    res.set('X-Hook-Secret', hookSecret);
+    res.status(200).send();
+
+    console.log('✓ Webhook handshake completed');
+    console.log('===================================\n');
+    return;
+  }
+
+  // Handle webhook events
+  console.log('\n===== ASANA WEBHOOK EVENT =====');
+  console.log('Received webhook event');
+
+  try {
+    const events = req.body.events || [];
+    console.log(`Processing ${events.length} event(s)`);
+
+    for (const event of events) {
+      console.log('\nEvent details:');
+      console.log('  Action:', event.action);
+      console.log('  Resource type:', event.resource?.resource_type);
+      console.log('  Resource GID:', event.resource?.gid);
+
+      // Only process task completion changes
+      if (
+        event.resource?.resource_type === 'task' &&
+        event.action === 'changed'
+      ) {
+        const taskId = event.resource.gid;
+        console.log('  Task changed event for task:', taskId);
+
+        // Check if we have this task mapped to a conversation
+        const conversationId = asanaTaskToConversation.get(taskId);
+
+        if (!conversationId) {
+          console.log('  ⚠ No conversation mapping found for this task');
+          continue;
+        }
+
+        console.log('  Found conversation mapping:', conversationId);
+
+        // Fetch the task to check completion status
+        console.log('  Fetching task details from Asana...');
+        const taskResponse = await fetch(
+          `https://app.asana.com/api/1.0/tasks/${taskId}`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${ASANA_TOKEN}`,
+              Accept: 'application/json',
+            },
+          }
+        );
+
+        if (taskResponse.ok) {
+          const taskData = await taskResponse.json();
+          const isCompleted = taskData.data.completed;
+
+          console.log('  Task completion status:', isCompleted);
+
+          // Update Intercom conversation based on completion status
+          if (isCompleted) {
+            console.log('  → Updating Intercom to "Completed"');
+            await updateConversationAsanaStatus(conversationId, 'Completed');
+          } else {
+            console.log('  → Clearing Intercom asanaStatus');
+            await updateConversationAsanaStatus(conversationId, '');
+          }
+        } else {
+          console.error('  ✗ Failed to fetch task details');
+        }
+      }
+    }
+
+    console.log('================================\n');
+    res.status(200).send();
+  } catch (error) {
+    console.error('Error processing webhook:', error);
+    res.status(500).send();
   }
 });
 
