@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import FormData from 'form-data';
+import multer from 'multer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,6 +41,15 @@ const asanaTaskToConversation = new Map();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Configure multer for handling file uploads (store in memory)
+// Asana enforces a 100MB size limit on attachments
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB max file size (Asana's limit)
+  },
+});
 
 // Middleware
 app.use(bodyParser.json());
@@ -333,7 +343,88 @@ function isValidUrl(string) {
   }
 }
 
-// Helper function to upload attachment to Asana task
+// Helper function to upload attachment to Asana task from buffer
+// Using multipart/form-data as required by Asana API
+// Reference: https://developers.asana.com/reference/createattachmentforobject
+async function uploadBufferToAsana(taskId, fileBuffer, fileName, contentType) {
+  try {
+    console.log('===== ASANA UPLOAD FROM BUFFER =====');
+    console.log('Uploading to Asana task ID:', taskId);
+    console.log('Original file name:', fileName);
+    console.log('Content type:', contentType);
+    console.log('File size:', fileBuffer.length, 'bytes');
+
+    // Encode filename for non-ASCII characters (as per Asana API requirements)
+    // Example: résumé.pdf becomes r%C3%A9sum%C3%A9.pdf
+    const encodedFileName = encodeURIComponent(fileName);
+    console.log('Encoded file name:', encodedFileName);
+
+    // Create multipart/form-data for upload
+    // Asana API requires:
+    // - parent: the task/object GID
+    // - file: the file content with proper Content-Disposition headers
+    const formData = new FormData();
+    formData.append('parent', taskId);
+    formData.append('file', fileBuffer, {
+      filename: encodedFileName,
+      contentType: contentType,
+    });
+
+    // Upload to Asana using multipart/form-data
+    const asanaResponse = await fetch(
+      'https://app.asana.com/api/1.0/attachments',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ASANA_TOKEN}`,
+          Accept: 'application/json',
+          // FormData automatically sets Content-Type with boundary
+          ...formData.getHeaders(),
+        },
+        body: formData,
+      }
+    );
+
+    if (asanaResponse.ok) {
+      const asanaData = await asanaResponse.json();
+      const permanentUrl =
+        asanaData.data.permanent_url || asanaData.data.download_url;
+      console.log('✓ Successfully uploaded attachment to Asana');
+      console.log('Asana permanent URL:', permanentUrl);
+      console.log('====================================');
+      return permanentUrl;
+    } else {
+      console.error('✗ Error uploading attachment to Asana');
+      console.error(
+        'Response status:',
+        asanaResponse.status,
+        asanaResponse.statusText
+      );
+
+      // Try to get error response body
+      const contentType = asanaResponse.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        try {
+          const errorData = await asanaResponse.json();
+          console.error('Error details:', JSON.stringify(errorData, null, 2));
+        } catch (e) {
+          console.error('Failed to parse JSON error response');
+        }
+      } else {
+        const errorText = await asanaResponse.text();
+        console.error('Error response:', errorText);
+      }
+      console.error('====================================');
+      return null;
+    }
+  } catch (error) {
+    console.error('Error in uploadBufferToAsana:', error);
+    console.error('Error details:', error.message);
+    return null;
+  }
+}
+
+// Helper function to upload attachment to Asana task from URL
 async function uploadAttachmentToAsana(taskId, attachmentUrl) {
   try {
     // Validate if it's a proper URL
@@ -375,47 +466,8 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
     const fileName =
       urlParts[urlParts.length - 1].split('?')[0] || 'attachment';
 
-    // Create form data for multipart upload
-    const formData = new FormData();
-    formData.append('parent', taskId);
-    formData.append('file', fileBuffer, {
-      filename: fileName,
-      contentType: contentType,
-    });
-
-    // Upload to Asana
-    console.log('===== ASANA UPLOAD PROCESS =====');
-    console.log('Uploading to Asana task ID:', taskId);
-    console.log('File name:', fileName);
-    console.log('Content type:', contentType);
-    console.log('File size:', fileBuffer.length, 'bytes');
-
-    const asanaResponse = await fetch(
-      'https://app.asana.com/api/1.0/attachments',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${ASANA_TOKEN}`,
-          ...formData.getHeaders(),
-        },
-        body: formData,
-      }
-    );
-
-    if (asanaResponse.ok) {
-      const asanaData = await asanaResponse.json();
-      const permanentUrl =
-        asanaData.data.permanent_url || asanaData.data.download_url;
-      console.log('✓ Successfully uploaded attachment to Asana');
-      console.log('Asana permanent URL:', permanentUrl);
-      console.log('======================================');
-      return permanentUrl;
-    } else {
-      const errorData = await asanaResponse.json();
-      console.error('✗ Error uploading attachment to Asana:', errorData);
-      console.error('======================================');
-      return null;
-    }
+    // Upload to Asana using the buffer upload function
+    return await uploadBufferToAsana(taskId, fileBuffer, fileName, contentType);
   } catch (error) {
     console.error('Error in uploadAttachmentToAsana:', error);
     return null;
@@ -559,10 +611,13 @@ app.post('/initialize', async (req, res) => {
   When a submit action is taken in a canvas component, it will hit this endpoint.
   This endpoint creates an Asana task with the contact's name and prevents
   duplicate submissions per conversation.
+  Handles both multipart form data (direct file uploads) and JSON data (file URLs).
 */
-app.post('/submit', async (req, res) => {
+app.post('/submit', upload.array('files', 10), async (req, res) => {
   console.log('Submit endpoint hit with component_id:', req.body.component_id);
   console.log('Request body:', JSON.stringify(req.body, null, 2));
+  console.log('Request files:', req.files ? req.files.length : 0);
+  console.log('Content-Type:', req.headers['content-type']);
 
   const conversationId = req.body.conversation?.id;
 
@@ -632,17 +687,22 @@ app.post('/submit', async (req, res) => {
       const amount = customAttrs.Amount || '';
       const agentRemark = customAttrs['Agent Remark'] || '';
 
-      // Get file uploads from canvas submission
-      // Intercom uploads files to their CDN and returns URLs
-      let fileUploads = req.body.input_values?.file_upload || [];
+      console.log('\n===== FILE UPLOAD PROCESSING =====');
+
+      // Check for direct file uploads (multer)
+      const directFiles = req.files || [];
+      console.log('Direct file uploads (req.files):', directFiles.length);
+
+      // Check for file URLs from Intercom CDN
+      let fileUrls = req.body.input_values?.file_upload || [];
 
       // Ensure it's an array
-      if (!Array.isArray(fileUploads)) {
-        fileUploads = fileUploads ? [fileUploads] : [];
+      if (!Array.isArray(fileUrls)) {
+        fileUrls = fileUrls ? [fileUrls] : [];
       }
 
       // Handle different formats - Intercom may return objects with url property or direct URLs
-      fileUploads = fileUploads
+      fileUrls = fileUrls
         .map((item) => {
           if (typeof item === 'string') {
             return item;
@@ -653,13 +713,16 @@ app.post('/submit', async (req, res) => {
         })
         .filter((url) => url !== null);
 
-      console.log('\n===== FILE UPLOAD PROCESSING =====');
+      console.log('File URLs from Intercom CDN:', fileUrls.length);
       console.log(
         'Raw input_values.file_upload:',
         JSON.stringify(req.body.input_values?.file_upload)
       );
-      console.log('Parsed file URLs:', JSON.stringify(fileUploads));
-      console.log('Number of files:', fileUploads.length);
+      console.log('Parsed file URLs:', JSON.stringify(fileUrls));
+      console.log(
+        'Total files to process:',
+        directFiles.length + fileUrls.length
+      );
       console.log('==================================\n');
 
       // Build basic task notes
@@ -749,31 +812,50 @@ Contact Information:
         // Upload files to Asana if available
         const attachmentPermanentUrls = [];
         let attachmentStatus = null;
+        const totalFiles = directFiles.length + fileUrls.length;
 
-        if (fileUploads && fileUploads.length > 0) {
+        if (totalFiles > 0) {
           console.log('\n===== FILE UPLOAD TO ASANA =====');
-          console.log(`Processing ${fileUploads.length} file(s)`);
+          console.log(`Processing ${totalFiles} file(s)`);
 
-          const uploadPromises = fileUploads.map(async (fileUrl) => {
-            if (isValidUrl(fileUrl)) {
-              console.log(`Uploading file: ${fileUrl}`);
-              const permanentUrl = await uploadAttachmentToAsana(
-                asanaTaskId,
-                fileUrl
+          const uploadPromises = [];
+
+          // Handle direct file uploads (from req.files)
+          if (directFiles.length > 0) {
+            console.log(
+              `Processing ${directFiles.length} direct file upload(s)`
+            );
+            directFiles.forEach((file) => {
+              console.log(`  - ${file.originalname} (${file.size} bytes)`);
+              uploadPromises.push(
+                uploadBufferToAsana(
+                  asanaTaskId,
+                  file.buffer,
+                  file.originalname,
+                  file.mimetype
+                )
               );
-              if (permanentUrl) {
-                console.log(`✓ Successfully uploaded: ${permanentUrl}`);
-                return permanentUrl;
-              } else {
-                console.log(`✗ Failed to upload: ${fileUrl}`);
-                return null;
-              }
-            } else {
-              console.log(`⚠ Invalid URL: ${fileUrl}`);
-              return null;
-            }
-          });
+            });
+          }
 
+          // Handle file URLs (from Intercom CDN)
+          if (fileUrls.length > 0) {
+            console.log(
+              `Processing ${fileUrls.length} file URL(s) from Intercom`
+            );
+            fileUrls.forEach((fileUrl) => {
+              if (isValidUrl(fileUrl)) {
+                console.log(`  - ${fileUrl}`);
+                uploadPromises.push(
+                  uploadAttachmentToAsana(asanaTaskId, fileUrl)
+                );
+              } else {
+                console.log(`  ⚠ Invalid URL: ${fileUrl}`);
+              }
+            });
+          }
+
+          // Upload all files in parallel
           const uploadResults = await Promise.all(uploadPromises);
           attachmentPermanentUrls.push(
             ...uploadResults.filter((url) => url !== null)
