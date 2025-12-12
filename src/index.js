@@ -68,18 +68,13 @@ const initialCanvas = {
           style: 'header',
         },
         {
-          type: 'text',
-          id: 'file_instructions',
-          text: 'Add file URLs below (one per line, optional)',
-          align: 'left',
-          style: 'paragraph',
-        },
-        {
-          type: 'textarea',
+          type: 'input',
           id: 'file_upload',
-          label: 'Attachment URLs (Optional)',
-          placeholder: 'Paste file URLs here, one per line',
+          label: 'Attachments (Optional)',
+          placeholder: 'Choose files to upload',
+          input_type: 'file',
           save_state: 'unsaved',
+          multiselect: true,
         },
         {
           type: 'button',
@@ -637,15 +632,32 @@ app.post('/submit', async (req, res) => {
       const amount = customAttrs.Amount || '';
       const agentRemark = customAttrs['Agent Remark'] || '';
 
-      // Get file uploads from canvas submission (textarea with URLs separated by newlines)
-      const fileUploadText = req.body.input_values?.file_upload || '';
-      const fileUploads = fileUploadText
-        .split('\n')
-        .map((url) => url.trim())
-        .filter((url) => url.length > 0);
+      // Get file uploads from canvas submission
+      // Intercom uploads files to their CDN and returns URLs
+      let fileUploads = req.body.input_values?.file_upload || [];
+
+      // Ensure it's an array
+      if (!Array.isArray(fileUploads)) {
+        fileUploads = fileUploads ? [fileUploads] : [];
+      }
+
+      // Handle different formats - Intercom may return objects with url property or direct URLs
+      fileUploads = fileUploads
+        .map((item) => {
+          if (typeof item === 'string') {
+            return item;
+          } else if (item && item.url) {
+            return item.url;
+          }
+          return null;
+        })
+        .filter((url) => url !== null);
 
       console.log('\n===== FILE UPLOAD PROCESSING =====');
-      console.log('File upload text:', fileUploadText);
+      console.log(
+        'Raw input_values.file_upload:',
+        JSON.stringify(req.body.input_values?.file_upload)
+      );
       console.log('Parsed file URLs:', JSON.stringify(fileUploads));
       console.log('Number of files:', fileUploads.length);
       console.log('==================================\n');
