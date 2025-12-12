@@ -22,6 +22,7 @@ const ASANA_CUSTOM_FIELDS = {
   AMOUNT: null,
   AGENT_REMARK: null,
   INTERCOM_CONVERSATION_ID: null, // For webhook sync back to Intercom
+  ATTACHMENT: null, // For storing attachment URLs
 };
 
 // Cache for custom field mappings
@@ -49,7 +50,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 /*
   This object defines the canvas that will display when your app initializes.
-  It includes a button to create an Asana task for the contact.
+  It includes a button to create an Asana task for the contact and a file upload input.
   
   More information on these can be found in the reference docs.
   Canvas docs: https://developers.intercom.com/docs/references/canvas-kit/responseobjects/canvas/
@@ -65,6 +66,20 @@ const initialCanvas = {
           text: 'Create Asana Task for Contact',
           align: 'center',
           style: 'header',
+        },
+        {
+          type: 'text',
+          id: 'file_instructions',
+          text: 'Add file URLs below (one per line, optional)',
+          align: 'left',
+          style: 'paragraph',
+        },
+        {
+          type: 'textarea',
+          id: 'file_upload',
+          label: 'Attachment URLs (Optional)',
+          placeholder: 'Paste file URLs here, one per line',
+          save_state: 'unsaved',
         },
         {
           type: 'button',
@@ -131,64 +146,22 @@ async function getConversation(conversationId) {
   }
 }
 
-// Helper function to find attachment URL by ID from Intercom conversation
-function findAttachmentUrlById(conversation, attachmentId) {
-  console.log('Searching for attachment with ID:', attachmentId);
-
-  const allAttachments = [];
-
-  // Check the main conversation source for attachments
-  if (
-    conversation.source &&
-    conversation.source.attachments &&
-    Array.isArray(conversation.source.attachments)
-  ) {
-    allAttachments.push(...conversation.source.attachments);
-  }
-
-  // Check each conversation part for attachments
-  if (
-    conversation.conversation_parts &&
-    conversation.conversation_parts.conversation_parts &&
-    Array.isArray(conversation.conversation_parts.conversation_parts)
-  ) {
-    conversation.conversation_parts.conversation_parts.forEach((part) => {
-      if (part.attachments && Array.isArray(part.attachments)) {
-        allAttachments.push(...part.attachments);
-      }
-    });
-  }
-
-  console.log(
-    `Total attachments found in conversation: ${allAttachments.length}`
-  );
-
-  // Try to find attachment by matching the ID in the URL
-  for (const attachment of allAttachments) {
-    console.log(
-      'Checking attachment:',
-      attachment.name,
-      'URL:',
-      attachment.url
-    );
-
-    // Check if the attachment ID appears in the URL
-    if (attachment.url && attachment.url.includes(String(attachmentId))) {
-      console.log('✓ Found matching attachment!');
-      console.log('  Name:', attachment.name);
-      console.log('  URL:', attachment.url);
-      console.log('  Content Type:', attachment.content_type);
-      return attachment.url;
-    }
-  }
-
-  console.log('✗ No attachment found with ID:', attachmentId);
-  return null;
-}
-
 // Helper function to update Intercom conversation custom attributes
-async function updateConversationAttribute(conversationId, asanaTaskId) {
+async function updateConversationAttribute(
+  conversationId,
+  asanaTaskId,
+  attachmentUrls = null
+) {
   try {
+    const customAttributes = {
+      AsanaTaskID: asanaTaskId,
+    };
+
+    // Add attachmentUrl if provided
+    if (attachmentUrls && attachmentUrls.length > 0) {
+      customAttributes.attachmentUrl = JSON.stringify(attachmentUrls);
+    }
+
     const response = await fetch(
       `https://api.intercom.io/conversations/${conversationId}`,
       {
@@ -200,15 +173,18 @@ async function updateConversationAttribute(conversationId, asanaTaskId) {
           Accept: 'application/json',
         },
         body: JSON.stringify({
-          custom_attributes: {
-            AsanaTaskID: asanaTaskId,
-          },
+          custom_attributes: customAttributes,
         }),
       }
     );
 
     if (response.ok) {
       console.log('Successfully updated conversation with Asana task ID');
+      if (attachmentUrls && attachmentUrls.length > 0) {
+        console.log(
+          `Successfully updated conversation with ${attachmentUrls.length} attachment URL(s)`
+        );
+      }
       return true;
     } else {
       const errorData = await response.json();
@@ -307,6 +283,7 @@ async function initializeCustomFieldMappings() {
       Amount: 'AMOUNT',
       'Agent Remark': 'AGENT_REMARK',
       intercomConversationId: 'INTERCOM_CONVERSATION_ID',
+      attachment: 'ATTACHMENT',
     };
 
     // Map custom field names to their GIDs
@@ -480,6 +457,7 @@ app.get('/asana-custom-fields', async (req, res) => {
           AGENT_REMARK: ASANA_CUSTOM_FIELDS.AGENT_REMARK,
           INTERCOM_CONVERSATION_ID:
             ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID,
+          ATTACHMENT: ASANA_CUSTOM_FIELDS.ATTACHMENT,
         },
         message:
           'Custom fields are automatically mapped on server start. Check mapped_fields to see current mappings.',
@@ -648,7 +626,7 @@ app.post('/submit', async (req, res) => {
         }
       }
 
-      // Get full conversation details to access custom attributes and attachments
+      // Get full conversation details to access custom attributes
       const fullConversation = await getConversation(conversationId);
       const customAttrs = fullConversation?.custom_attributes || {};
 
@@ -659,70 +637,18 @@ app.post('/submit', async (req, res) => {
       const amount = customAttrs.Amount || '';
       const agentRemark = customAttrs['Agent Remark'] || '';
 
-      // Handle attachment from custom attributes
-      // The attachment custom field can be a single ID, an array of IDs, or a URL
-      let attachmentFieldValue = customAttrs.attachment;
-      let attachmentId = null;
-      let attachmentUrl = null;
+      // Get file uploads from canvas submission (textarea with URLs separated by newlines)
+      const fileUploadText = req.body.input_values?.file_upload || '';
+      const fileUploads = fileUploadText
+        .split('\n')
+        .map((url) => url.trim())
+        .filter((url) => url.length > 0);
 
-      console.log('\n===== ATTACHMENT PROCESSING FROM CUSTOM FIELD =====');
-      console.log(
-        'Attachment field raw value:',
-        JSON.stringify(attachmentFieldValue)
-      );
-      console.log('Attachment field type:', typeof attachmentFieldValue);
-      console.log('Is array:', Array.isArray(attachmentFieldValue));
-
-      // Handle array format (Intercom file fields return arrays)
-      if (
-        Array.isArray(attachmentFieldValue) &&
-        attachmentFieldValue.length > 0
-      ) {
-        attachmentId = attachmentFieldValue[0]; // Take first attachment
-        console.log(
-          'Attachment is an array, using first element:',
-          attachmentId
-        );
-      } else if (attachmentFieldValue) {
-        attachmentId = attachmentFieldValue;
-        console.log('Attachment is a single value:', attachmentId);
-      }
-
-      if (attachmentId) {
-        // If it's already a valid URL, use it directly
-        if (isValidUrl(String(attachmentId))) {
-          attachmentUrl = String(attachmentId);
-          console.log('✓ Attachment field already contains full URL');
-        } else {
-          // It's an ID, find the matching attachment in conversation to get full URL
-          console.log(
-            'Searching conversation for attachment with ID:',
-            attachmentId
-          );
-          attachmentUrl = findAttachmentUrlById(fullConversation, attachmentId);
-
-          if (attachmentUrl) {
-            console.log('✓ Successfully found attachment URL');
-          } else {
-            console.log('✗ Could not find attachment with ID:', attachmentId);
-            console.log(
-              'The attachment may not be present in the conversation response'
-            );
-            console.log(
-              'This might happen if the conversation needs to be re-fetched'
-            );
-          }
-        }
-      } else {
-        console.log('No attachment ID in custom attributes');
-      }
-
-      if (attachmentUrl) {
-        console.log('Final attachment URL to use:', attachmentUrl);
-      } else {
-        console.log('No attachment to process for this task');
-      }
-      console.log('==================================================\n');
+      console.log('\n===== FILE UPLOAD PROCESSING =====');
+      console.log('File upload text:', fileUploadText);
+      console.log('Parsed file URLs:', JSON.stringify(fileUploads));
+      console.log('Number of files:', fileUploads.length);
+      console.log('==================================\n');
 
       // Build basic task notes
       const taskNotes = `Task created from Intercom conversation ${conversationId}
@@ -808,45 +734,88 @@ Contact Information:
       if (asanaResponse.ok) {
         const asanaTaskId = asanaData.data.gid;
 
-        // Upload attachment to Asana if available
-        let attachmentPermanentUrl = null;
+        // Upload files to Asana if available
+        const attachmentPermanentUrls = [];
         let attachmentStatus = null;
-        if (attachmentUrl && attachmentUrl !== 'N/A') {
-          console.log('\n===== ATTACHMENT PROCESSING =====');
-          console.log('Found attachment to process');
-          console.log('Attachment URL:', attachmentUrl);
 
-          // Check if it's a valid URL before attempting upload
-          if (!isValidUrl(attachmentUrl)) {
-            console.log(
-              '⚠ Attachment field is not a valid URL, skipping upload'
-            );
-            attachmentStatus = 'invalid_url';
-          } else {
-            console.log('✓ Valid URL detected, proceeding with upload');
-            attachmentPermanentUrl = await uploadAttachmentToAsana(
-              asanaTaskId,
-              attachmentUrl
-            );
+        if (fileUploads && fileUploads.length > 0) {
+          console.log('\n===== FILE UPLOAD TO ASANA =====');
+          console.log(`Processing ${fileUploads.length} file(s)`);
 
-            if (attachmentPermanentUrl) {
-              console.log(
-                '✓ Final attachment permanent URL:',
-                attachmentPermanentUrl
+          const uploadPromises = fileUploads.map(async (fileUrl) => {
+            if (isValidUrl(fileUrl)) {
+              console.log(`Uploading file: ${fileUrl}`);
+              const permanentUrl = await uploadAttachmentToAsana(
+                asanaTaskId,
+                fileUrl
               );
-              attachmentStatus = 'success';
+              if (permanentUrl) {
+                console.log(`✓ Successfully uploaded: ${permanentUrl}`);
+                return permanentUrl;
+              } else {
+                console.log(`✗ Failed to upload: ${fileUrl}`);
+                return null;
+              }
             } else {
-              console.log('✗ Attachment upload failed');
-              attachmentStatus = 'failed';
+              console.log(`⚠ Invalid URL: ${fileUrl}`);
+              return null;
             }
+          });
+
+          const uploadResults = await Promise.all(uploadPromises);
+          attachmentPermanentUrls.push(
+            ...uploadResults.filter((url) => url !== null)
+          );
+
+          if (attachmentPermanentUrls.length > 0) {
+            console.log(
+              `✓ Successfully uploaded ${attachmentPermanentUrls.length} file(s)`
+            );
+            attachmentStatus = 'success';
+
+            // Store attachment URLs in Asana task custom field
+            if (ASANA_CUSTOM_FIELDS.ATTACHMENT) {
+              const attachmentUrlsJson = JSON.stringify(
+                attachmentPermanentUrls
+              );
+              console.log(
+                'Updating Asana task with attachment URLs:',
+                attachmentUrlsJson
+              );
+
+              await fetch(
+                `https://app.asana.com/api/1.0/tasks/${asanaTaskId}`,
+                {
+                  method: 'PUT',
+                  headers: {
+                    Authorization: `Bearer ${ASANA_TOKEN}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    data: {
+                      custom_fields: {
+                        [ASANA_CUSTOM_FIELDS.ATTACHMENT]: attachmentUrlsJson,
+                      },
+                    },
+                  }),
+                }
+              );
+            }
+          } else {
+            console.log('✗ No files were successfully uploaded');
+            attachmentStatus = 'failed';
           }
-          console.log('==================================\n');
+          console.log('================================\n');
         } else {
-          console.log('No attachments to process for this task');
+          console.log('No files to upload');
         }
 
-        // Save Asana task ID to Intercom conversation
-        await updateConversationAttribute(conversationId, asanaTaskId);
+        // Save Asana task ID and attachment URLs to Intercom conversation
+        await updateConversationAttribute(
+          conversationId,
+          asanaTaskId,
+          attachmentPermanentUrls
+        );
 
         // Store mapping for webhook callbacks
         asanaTaskToConversation.set(asanaTaskId, conversationId);
@@ -878,18 +847,13 @@ Contact Information:
           },
         ];
 
-        // Add attachment status if attachment was processed
-        if (attachmentUrl && attachmentStatus) {
+        // Add attachment status if files were processed
+        if (attachmentStatus) {
           let statusText = '';
           if (attachmentStatus === 'success') {
-            statusText = '✓ Attachment uploaded successfully';
-          } else if (attachmentStatus === 'invalid_url') {
-            statusText =
-              '⚠ Attachment field is not a valid URL (ID: ' +
-              attachmentUrl +
-              ')';
+            statusText = `✓ ${attachmentPermanentUrls.length} file(s) uploaded successfully`;
           } else {
-            statusText = '⚠ Attachment upload failed';
+            statusText = '⚠ File upload failed';
           }
 
           components.push({
