@@ -64,7 +64,7 @@ app.use(express.static(path.join(__dirname, 'public')));
   
   More information on these can be found in the reference docs.
   Canvas docs: https://developers.intercom.com/docs/references/canvas-kit/responseobjects/canvas/
-  Components docs: https://developers.intercom.com/docs/references/canvas-kit/interactivecomponents/button/
+  Input docs: https://developers.intercom.com/docs/references/2.5/canvas-kit/interactivecomponents/input
 */
 const initialCanvas = {
   canvas: {
@@ -81,10 +81,8 @@ const initialCanvas = {
           type: 'input',
           id: 'file_upload',
           label: 'Attachments (Optional)',
-          placeholder: 'Choose files to upload',
+          placeholder: 'Choose file to upload',
           input_type: 'file',
-          save_state: 'unsaved',
-          multiselect: true,
         },
         {
           type: 'button',
