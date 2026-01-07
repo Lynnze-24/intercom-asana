@@ -10,9 +10,9 @@ const __dirname = path.dirname(__filename);
 
 // Asana configuration
 const ASANA_TOKEN =
-  '2/1212353370344534/1212340334177314:423f18d3f0b9a38f0e75513a31350873';
-const ASANA_WORKSPACE = '1211014974336131';
-const ASANA_PROJECT = '1212353369442239';
+  '2/1207610480896330/1212689586165502:979afeddc93c9825272afec2a36ba283';
+const ASANA_WORKSPACE = '1212687373718997';
+const ASANA_PROJECT = '1212687378578807';
 
 // Asana Custom Field GIDs - Will be automatically populated on server start
 const ASANA_CUSTOM_FIELDS = {
