@@ -993,7 +993,7 @@ Contact Information:
   Asana webhook endpoint to receive task completion updates
   Handles the handshake and task status change events
 */
-app.post('/asana-webhook', async (req, res) => {
+app.post('/asana-webhook-prod', async (req, res) => {
   const hookSecret = req.headers['x-hook-secret'];
 
   // Handle webhook handshake
