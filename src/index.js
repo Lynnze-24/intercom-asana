@@ -131,6 +131,32 @@ async function getConversation(conversationId) {
   }
 }
 
+// Helper function to get ticket details from Intercom Tickets API
+async function getTicket(ticketId) {
+  try {
+    const response = await fetch(
+      `https://api.intercom.io/tickets/${ticketId}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${INTERCOM_TOKEN}`,
+          'Intercom-Version': '2.14',
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      return data;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error fetching ticket from Intercom:', error);
+    return null;
+  }
+}
+
 // Helper function to find attachment URL by ID from Intercom conversation
 function findAttachmentUrlById(conversation, attachmentId) {
   console.log('Searching for attachment with ID:', attachmentId);
@@ -186,21 +212,21 @@ function findAttachmentUrlById(conversation, attachmentId) {
   return null;
 }
 
-// Helper function to update Intercom conversation custom attributes
-async function updateConversationAttribute(conversationId, asanaTaskId) {
+// Helper function to update Intercom ticket attributes
+async function updateTicketAttribute(ticketId, asanaTaskId) {
   try {
     const response = await fetch(
-      `https://api.intercom.io/conversations/${conversationId}`,
+      `https://api.intercom.io/tickets/${ticketId}`,
       {
         method: 'PUT',
         headers: {
           Authorization: `Bearer ${INTERCOM_TOKEN}`,
-          'Intercom-Version': '2.11',
+          'Intercom-Version': '2.14',
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
         body: JSON.stringify({
-          custom_attributes: {
+          ticket_attributes: {
             AsanaTaskID: asanaTaskId,
           },
         }),
@@ -208,38 +234,36 @@ async function updateConversationAttribute(conversationId, asanaTaskId) {
     );
 
     if (response.ok) {
-      console.log('Successfully updated conversation with Asana task ID');
+      console.log('Successfully updated ticket with Asana task ID');
       return true;
     } else {
       const errorData = await response.json();
-      console.error('Error updating conversation:', errorData);
+      console.error('Error updating ticket:', errorData);
       return false;
     }
   } catch (error) {
-    console.error('Error updating conversation attribute:', error);
+    console.error('Error updating ticket attribute:', error);
     return false;
   }
 }
 
-// Helper function to update Intercom conversation asanaStatus field
-async function updateConversationAsanaStatus(conversationId, status) {
+// Helper function to update Intercom ticket asanaStatus field
+async function updateTicketAsanaStatus(ticketId, status) {
   try {
-    console.log(
-      `Updating conversation ${conversationId} asanaStatus to: "${status}"`
-    );
+    console.log(`Updating ticket ${ticketId} asanaStatus to: "${status}"`);
 
     const response = await fetch(
-      `https://api.intercom.io/conversations/${conversationId}`,
+      `https://api.intercom.io/tickets/${ticketId}`,
       {
         method: 'PUT',
         headers: {
           Authorization: `Bearer ${INTERCOM_TOKEN}`,
-          'Intercom-Version': '2.11',
+          'Intercom-Version': '2.14',
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
         body: JSON.stringify({
-          custom_attributes: {
+          ticket_attributes: {
             asanaStatus: status,
           },
         }),
@@ -541,40 +565,45 @@ app.post('/initialize', async (req, res) => {
   // Check if this conversation already has an Asana task
   if (conversationId) {
     const conversation = await getConversation(conversationId);
-    const asanaTaskId = conversation?.custom_attributes?.AsanaTaskID;
+    const ticketId = conversation?.ticket?.id;
 
-    if (asanaTaskId) {
-      // Conversation already has an Asana task, show completed state
-      const completedCanvas = {
-        canvas: {
-          content: {
-            components: [
-              {
-                type: 'text',
-                id: 'success',
-                text: '✓ Asana Task Already Created',
-                align: 'center',
-                style: 'header',
-              },
-              {
-                type: 'text',
-                id: 'task_id',
-                text: `Task ID: ${asanaTaskId}`,
-                align: 'center',
-                style: 'paragraph',
-              },
-              {
-                type: 'text',
-                id: 'info',
-                text: 'This conversation already has an Asana task associated with it.',
-                align: 'center',
-                style: 'paragraph',
-              },
-            ],
+    if (ticketId) {
+      const ticket = await getTicket(ticketId);
+      const asanaTaskId = ticket?.ticket_attributes?.AsanaTaskID;
+
+      if (asanaTaskId) {
+        // Ticket already has an Asana task, show completed state
+        const completedCanvas = {
+          canvas: {
+            content: {
+              components: [
+                {
+                  type: 'text',
+                  id: 'success',
+                  text: '✓ Asana Task Already Created',
+                  align: 'center',
+                  style: 'header',
+                },
+                {
+                  type: 'text',
+                  id: 'task_id',
+                  text: `Task ID: ${asanaTaskId}`,
+                  align: 'center',
+                  style: 'paragraph',
+                },
+                {
+                  type: 'text',
+                  id: 'info',
+                  text: 'This ticket already has an Asana task associated with it.',
+                  align: 'center',
+                  style: 'paragraph',
+                },
+              ],
+            },
           },
-        },
-      };
-      return res.send(completedCanvas);
+        };
+        return res.send(completedCanvas);
+      }
     }
   }
 
@@ -596,39 +625,44 @@ app.post('/submit', async (req, res) => {
   // Check if this conversation already has an Asana task
   if (conversationId) {
     const conversation = await getConversation(conversationId);
-    const existingTaskId = conversation?.custom_attributes?.AsanaTaskID;
+    const ticketId = conversation?.ticket?.id;
 
-    if (existingTaskId) {
-      const alreadySubmittedCanvas = {
-        canvas: {
-          content: {
-            components: [
-              {
-                type: 'text',
-                id: 'already_submitted',
-                text: 'Task already created for this conversation',
-                align: 'center',
-                style: 'header',
-              },
-              {
-                type: 'text',
-                id: 'task_id',
-                text: `Task ID: ${existingTaskId}`,
-                align: 'center',
-                style: 'paragraph',
-              },
-              {
-                type: 'text',
-                id: 'info',
-                text: 'You can only create one Asana task per conversation.',
-                align: 'center',
-                style: 'paragraph',
-              },
-            ],
+    if (ticketId) {
+      const ticket = await getTicket(ticketId);
+      const existingTaskId = ticket?.ticket_attributes?.AsanaTaskID;
+
+      if (existingTaskId) {
+        const alreadySubmittedCanvas = {
+          canvas: {
+            content: {
+              components: [
+                {
+                  type: 'text',
+                  id: 'already_submitted',
+                  text: 'Task already created for this ticket',
+                  align: 'center',
+                  style: 'header',
+                },
+                {
+                  type: 'text',
+                  id: 'task_id',
+                  text: `Task ID: ${existingTaskId}`,
+                  align: 'center',
+                  style: 'paragraph',
+                },
+                {
+                  type: 'text',
+                  id: 'info',
+                  text: 'You can only create one Asana task per ticket.',
+                  align: 'center',
+                  style: 'paragraph',
+                },
+              ],
+            },
           },
-        },
-      };
-      return res.send(alreadySubmittedCanvas);
+        };
+        return res.send(alreadySubmittedCanvas);
+      }
     }
   }
 
@@ -648,24 +682,35 @@ app.post('/submit', async (req, res) => {
         }
       }
 
-      // Get full conversation details to access custom attributes and attachments
+      // Get full conversation details to get ticket ID
       const fullConversation = await getConversation(conversationId);
-      const customAttrs = fullConversation?.custom_attributes || {};
+      const ticketId = fullConversation?.ticket?.id;
 
-      // Extract the 5 custom fields
-      const wallet = customAttrs.Wallet || '';
-      const paymentGateway = customAttrs['Payment Gateway'] || '';
-      const transactionID = customAttrs['Transaction ID'] || '';
-      const amount = customAttrs.Amount || '';
-      const agentRemark = customAttrs['Agent Remark'] || '';
+      if (!ticketId) {
+        throw new Error('No ticket found for this conversation');
+      }
 
-      // Handle attachment from custom attributes
-      // The attachment custom field can be a single ID, an array of IDs, or a URL
-      let attachmentFieldValue = customAttrs.attachment;
-      let attachmentId = null;
+      // Get ticket details to access ticket attributes
+      const ticket = await getTicket(ticketId);
+      if (!ticket) {
+        throw new Error('Failed to fetch ticket details');
+      }
+
+      const ticketAttrs = ticket?.ticket_attributes || {};
+
+      // Extract the 5 custom fields from ticket attributes
+      const wallet = ticketAttrs.Wallet || '';
+      const paymentGateway = ticketAttrs['Payment Gateway'] || '';
+      const transactionID = ticketAttrs['Transaction ID'] || '';
+      const amount = ticketAttrs.Amount || '';
+      const agentRemark = ticketAttrs['Agent Remark'] || '';
+
+      // Handle attachment from ticket attributes
+      // Ticket attachment format: array of objects with url property
+      let attachmentFieldValue = ticketAttrs.attachment;
       let attachmentUrl = null;
 
-      console.log('\n===== ATTACHMENT PROCESSING FROM CUSTOM FIELD =====');
+      console.log('\n===== ATTACHMENT PROCESSING FROM TICKET =====');
       console.log(
         'Attachment field raw value:',
         JSON.stringify(attachmentFieldValue)
@@ -673,48 +718,31 @@ app.post('/submit', async (req, res) => {
       console.log('Attachment field type:', typeof attachmentFieldValue);
       console.log('Is array:', Array.isArray(attachmentFieldValue));
 
-      // Handle array format (Intercom file fields return arrays)
+      // Handle ticket attachment format (array of objects with url)
       if (
         Array.isArray(attachmentFieldValue) &&
         attachmentFieldValue.length > 0
       ) {
-        attachmentId = attachmentFieldValue[0]; // Take first attachment
-        console.log(
-          'Attachment is an array, using first element:',
-          attachmentId
-        );
-      } else if (attachmentFieldValue) {
-        attachmentId = attachmentFieldValue;
-        console.log('Attachment is a single value:', attachmentId);
-      }
-
-      if (attachmentId) {
-        // If it's already a valid URL, use it directly
-        if (isValidUrl(String(attachmentId))) {
-          attachmentUrl = String(attachmentId);
-          console.log('✓ Attachment field already contains full URL');
+        // Take first attachment's URL
+        const firstAttachment = attachmentFieldValue[0];
+        if (firstAttachment && firstAttachment.url) {
+          attachmentUrl = firstAttachment.url;
+          console.log('✓ Found attachment URL from ticket:', attachmentUrl);
+          console.log('  Name:', firstAttachment.name);
+          console.log('  Content Type:', firstAttachment.content_type);
         } else {
-          // It's an ID, find the matching attachment in conversation to get full URL
-          console.log(
-            'Searching conversation for attachment with ID:',
-            attachmentId
-          );
-          attachmentUrl = findAttachmentUrlById(fullConversation, attachmentId);
-
-          if (attachmentUrl) {
-            console.log('✓ Successfully found attachment URL');
-          } else {
-            console.log('✗ Could not find attachment with ID:', attachmentId);
-            console.log(
-              'The attachment may not be present in the conversation response'
-            );
-            console.log(
-              'This might happen if the conversation needs to be re-fetched'
-            );
-          }
+          console.log('⚠ Attachment object missing URL property');
+        }
+      } else if (attachmentFieldValue) {
+        // Handle legacy format (single URL string)
+        if (isValidUrl(String(attachmentFieldValue))) {
+          attachmentUrl = String(attachmentFieldValue);
+          console.log('✓ Attachment field contains URL string');
+        } else {
+          console.log('⚠ Attachment field is not a valid URL or array');
         }
       } else {
-        console.log('No attachment ID in custom attributes');
+        console.log('No attachment in ticket attributes');
       }
 
       if (attachmentUrl) {
@@ -845,8 +873,8 @@ Contact Information:
           console.log('No attachments to process for this task');
         }
 
-        // Save Asana task ID to Intercom conversation
-        await updateConversationAttribute(conversationId, asanaTaskId);
+        // Save Asana task ID to Intercom ticket
+        await updateTicketAttribute(ticketId, asanaTaskId);
 
         // Store mapping for webhook callbacks
         asanaTaskToConversation.set(asanaTaskId, conversationId);
@@ -1058,13 +1086,26 @@ app.post('/asana-webhook', async (req, res) => {
             continue;
           }
 
-          // Update Intercom conversation based on completion status
+          // Get conversation to find ticket ID
+          const conversation = await getConversation(conversationId);
+          const ticketId = conversation?.ticket?.id;
+
+          if (!ticketId) {
+            console.log(
+              '  ⚠ No ticket found for conversation:',
+              conversationId
+            );
+            console.log('  Skipping webhook update');
+            continue;
+          }
+
+          // Update Intercom ticket based on completion status
           if (isCompleted) {
-            console.log('  → Updating Intercom to "Completed"');
-            await updateConversationAsanaStatus(conversationId, 'Completed');
+            console.log('  → Updating ticket to "Completed"');
+            await updateTicketAsanaStatus(ticketId, 'Completed');
           } else {
-            console.log('  → Clearing Intercom asanaStatus');
-            await updateConversationAsanaStatus(conversationId, '');
+            console.log('  → Clearing ticket asanaStatus');
+            await updateTicketAsanaStatus(ticketId, '');
           }
         } else {
           console.error('  ✗ Failed to fetch task details');
