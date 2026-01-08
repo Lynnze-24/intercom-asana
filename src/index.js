@@ -247,10 +247,10 @@ async function updateTicketAttribute(ticketId, asanaTaskId) {
   }
 }
 
-// Helper function to update Intercom ticket asanaStatus field
+// Helper function to update Intercom ticket Asana Status field
 async function updateTicketAsanaStatus(ticketId, status) {
   try {
-    console.log(`Updating ticket ${ticketId} asanaStatus to: "${status}"`);
+    console.log(`Updating ticket ${ticketId} Asana Status to: "${status}"`);
 
     const response = await fetch(
       `https://api.intercom.io/tickets/${ticketId}`,
@@ -264,22 +264,22 @@ async function updateTicketAsanaStatus(ticketId, status) {
         },
         body: JSON.stringify({
           ticket_attributes: {
-            asanaStatus: status,
+            'Asana Status': status,
           },
         }),
       }
     );
 
     if (response.ok) {
-      console.log(`✓ Successfully updated asanaStatus to "${status}"`);
+      console.log(`✓ Successfully updated Asana Status to "${status}"`);
       return true;
     } else {
       const errorData = await response.json();
-      console.error('✗ Error updating asanaStatus:', errorData);
+      console.error('✗ Error updating Asana Status:', errorData);
       return false;
     }
   } catch (error) {
-    console.error('Error updating asanaStatus:', error);
+    console.error('Error updating Asana Status:', error);
     return false;
   }
 }
@@ -705,10 +705,11 @@ app.post('/submit', async (req, res) => {
       const amount = ticketAttrs.Amount || '';
       const agentRemark = ticketAttrs['Agent Remark'] || '';
 
-      // Handle attachment from ticket attributes
+      // Handle attachments from ticket attributes
       // Ticket attachment format: array of objects with url property
-      let attachmentFieldValue = ticketAttrs.attachment;
-      let attachmentUrl = null;
+      let attachmentFieldValue =
+        ticketAttrs.Attachment || ticketAttrs.attachment; // Support both formats
+      let attachmentUrls = [];
 
       console.log('\n===== ATTACHMENT PROCESSING FROM TICKET =====');
       console.log(
@@ -723,20 +724,31 @@ app.post('/submit', async (req, res) => {
         Array.isArray(attachmentFieldValue) &&
         attachmentFieldValue.length > 0
       ) {
-        // Take first attachment's URL
-        const firstAttachment = attachmentFieldValue[0];
-        if (firstAttachment && firstAttachment.url) {
-          attachmentUrl = firstAttachment.url;
-          console.log('✓ Found attachment URL from ticket:', attachmentUrl);
-          console.log('  Name:', firstAttachment.name);
-          console.log('  Content Type:', firstAttachment.content_type);
-        } else {
-          console.log('⚠ Attachment object missing URL property');
+        // Process all attachments in the array
+        console.log(
+          `Found ${attachmentFieldValue.length} attachment(s) to process`
+        );
+        for (let i = 0; i < attachmentFieldValue.length; i++) {
+          const attachment = attachmentFieldValue[i];
+          if (attachment && attachment.url) {
+            attachmentUrls.push(attachment.url);
+            console.log(`✓ Attachment ${i + 1}:`, attachment.url);
+            console.log('  Name:', attachment.name);
+            console.log('  Content Type:', attachment.content_type);
+          } else {
+            console.log(`⚠ Attachment ${i + 1} missing URL property`);
+          }
         }
       } else if (attachmentFieldValue) {
-        // Handle legacy format (single URL string)
-        if (isValidUrl(String(attachmentFieldValue))) {
-          attachmentUrl = String(attachmentFieldValue);
+        // Handle legacy format (single URL string or single object)
+        if (
+          typeof attachmentFieldValue === 'object' &&
+          attachmentFieldValue.url
+        ) {
+          attachmentUrls.push(attachmentFieldValue.url);
+          console.log('✓ Found single attachment object with URL');
+        } else if (isValidUrl(String(attachmentFieldValue))) {
+          attachmentUrls.push(String(attachmentFieldValue));
           console.log('✓ Attachment field contains URL string');
         } else {
           console.log('⚠ Attachment field is not a valid URL or array');
@@ -745,10 +757,13 @@ app.post('/submit', async (req, res) => {
         console.log('No attachment in ticket attributes');
       }
 
-      if (attachmentUrl) {
-        console.log('Final attachment URL to use:', attachmentUrl);
+      if (attachmentUrls.length > 0) {
+        console.log(
+          `Final attachment URLs to use (${attachmentUrls.length}):`,
+          attachmentUrls
+        );
       } else {
-        console.log('No attachment to process for this task');
+        console.log('No attachments to process for this task');
       }
       console.log('==================================================\n');
 
@@ -836,39 +851,66 @@ Contact Information:
       if (asanaResponse.ok) {
         const asanaTaskId = asanaData.data.gid;
 
-        // Upload attachment to Asana if available
-        let attachmentPermanentUrl = null;
-        let attachmentStatus = null;
-        if (attachmentUrl && attachmentUrl !== 'N/A') {
+        // Upload all attachments to Asana if available
+        let attachmentResults = [];
+        if (attachmentUrls.length > 0) {
           console.log('\n===== ATTACHMENT PROCESSING =====');
-          console.log('Found attachment to process');
-          console.log('Attachment URL:', attachmentUrl);
+          console.log(`Processing ${attachmentUrls.length} attachment(s)`);
 
-          // Check if it's a valid URL before attempting upload
-          if (!isValidUrl(attachmentUrl)) {
+          for (let i = 0; i < attachmentUrls.length; i++) {
+            const attachmentUrl = attachmentUrls[i];
             console.log(
-              '⚠ Attachment field is not a valid URL, skipping upload'
+              `\n--- Processing attachment ${i + 1}/${
+                attachmentUrls.length
+              } ---`
             );
-            attachmentStatus = 'invalid_url';
-          } else {
+            console.log('Attachment URL:', attachmentUrl);
+
+            // Check if it's a valid URL before attempting upload
+            if (!isValidUrl(attachmentUrl)) {
+              console.log('⚠ Attachment is not a valid URL, skipping upload');
+              attachmentResults.push({
+                index: i + 1,
+                url: attachmentUrl,
+                status: 'invalid_url',
+                error: 'Invalid URL format',
+              });
+              continue;
+            }
+
             console.log('✓ Valid URL detected, proceeding with upload');
-            attachmentPermanentUrl = await uploadAttachmentToAsana(
+            const attachmentPermanentUrl = await uploadAttachmentToAsana(
               asanaTaskId,
               attachmentUrl
             );
 
             if (attachmentPermanentUrl) {
               console.log(
-                '✓ Final attachment permanent URL:',
+                '✓ Attachment uploaded successfully. Permanent URL:',
                 attachmentPermanentUrl
               );
-              attachmentStatus = 'success';
+              attachmentResults.push({
+                index: i + 1,
+                url: attachmentUrl,
+                status: 'success',
+                permanentUrl: attachmentPermanentUrl,
+              });
             } else {
               console.log('✗ Attachment upload failed');
-              attachmentStatus = 'failed';
+              attachmentResults.push({
+                index: i + 1,
+                url: attachmentUrl,
+                status: 'failed',
+                error: 'Upload failed',
+              });
             }
           }
-          console.log('==================================\n');
+          console.log('\n==================================');
+          console.log(
+            `Attachment processing complete: ${
+              attachmentResults.filter((r) => r.status === 'success').length
+            }/${attachmentUrls.length} successful`
+          );
         } else {
           console.log('No attachments to process for this task');
         }
@@ -906,18 +948,20 @@ Contact Information:
           },
         ];
 
-        // Add attachment status if attachment was processed
-        if (attachmentUrl && attachmentStatus) {
+        // Add attachment status if attachments were processed
+        if (attachmentResults.length > 0) {
+          const successCount = attachmentResults.filter(
+            (r) => r.status === 'success'
+          ).length;
+          const totalCount = attachmentResults.length;
           let statusText = '';
-          if (attachmentStatus === 'success') {
-            statusText = '✓ Attachment uploaded successfully';
-          } else if (attachmentStatus === 'invalid_url') {
-            statusText =
-              '⚠ Attachment field is not a valid URL (ID: ' +
-              attachmentUrl +
-              ')';
+
+          if (successCount === totalCount) {
+            statusText = `✓ ${successCount} attachment(s) uploaded successfully`;
+          } else if (successCount > 0) {
+            statusText = `⚠ ${successCount}/${totalCount} attachment(s) uploaded successfully`;
           } else {
-            statusText = '⚠ Attachment upload failed';
+            statusText = `✗ Failed to upload ${totalCount} attachment(s)`;
           }
 
           components.push({
@@ -1104,7 +1148,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
             console.log('  → Updating ticket to "Completed"');
             await updateTicketAsanaStatus(ticketId, 'Completed');
           } else {
-            console.log('  → Clearing ticket asanaStatus');
+            console.log('  → Clearing ticket Asana Status');
             await updateTicketAsanaStatus(ticketId, '');
           }
         } else {
