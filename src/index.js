@@ -330,7 +330,7 @@ async function initializeCustomFieldMappings() {
       'Transaction ID': 'TRANSACTION_ID',
       Amount: 'AMOUNT',
       'Agent Remark': 'AGENT_REMARK',
-      intercomConversationId: 'INTERCOM_CONVERSATION_ID',
+      'Intercom Conversation ID': 'INTERCOM_CONVERSATION_ID',
     };
 
     // Map custom field names to their GIDs
@@ -457,14 +457,29 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
     if (asanaResponse.ok) {
       const asanaData = await asanaResponse.json();
       const permanentUrl =
-        asanaData.data.permanent_url || asanaData.data.download_url;
+        asanaData.data?.permanent_url ||
+        asanaData.data?.download_url ||
+        asanaData.data?.url ||
+        'uploaded'; // Return a truthy value even if URL is missing
       console.log('✓ Successfully uploaded attachment to Asana');
-      console.log('Asana permanent URL:', permanentUrl);
+      console.log('Asana response:', JSON.stringify(asanaData, null, 2));
+      if (permanentUrl && permanentUrl !== 'uploaded') {
+        console.log('Asana permanent URL:', permanentUrl);
+      } else {
+        console.log('Note: No permanent URL in response, but upload succeeded');
+      }
       console.log('======================================');
       return permanentUrl;
     } else {
-      const errorData = await asanaResponse.json();
+      const errorData = await asanaResponse
+        .json()
+        .catch(() => ({ error: 'Unknown error' }));
       console.error('✗ Error uploading attachment to Asana:', errorData);
+      console.error(
+        'Response status:',
+        asanaResponse.status,
+        asanaResponse.statusText
+      );
       console.error('======================================');
       return null;
     }
@@ -879,29 +894,44 @@ Contact Information:
             }
 
             console.log('✓ Valid URL detected, proceeding with upload');
-            const attachmentPermanentUrl = await uploadAttachmentToAsana(
-              asanaTaskId,
-              attachmentUrl
-            );
-
-            if (attachmentPermanentUrl) {
-              console.log(
-                '✓ Attachment uploaded successfully. Permanent URL:',
-                attachmentPermanentUrl
+            try {
+              const attachmentPermanentUrl = await uploadAttachmentToAsana(
+                asanaTaskId,
+                attachmentUrl
               );
-              attachmentResults.push({
-                index: i + 1,
-                url: attachmentUrl,
-                status: 'success',
-                permanentUrl: attachmentPermanentUrl,
-              });
-            } else {
-              console.log('✗ Attachment upload failed');
+
+              if (
+                attachmentPermanentUrl &&
+                attachmentPermanentUrl.trim() !== ''
+              ) {
+                console.log(
+                  '✓ Attachment uploaded successfully. Permanent URL:',
+                  attachmentPermanentUrl
+                );
+                attachmentResults.push({
+                  index: i + 1,
+                  url: attachmentUrl,
+                  status: 'success',
+                  permanentUrl: attachmentPermanentUrl,
+                });
+              } else {
+                console.log(
+                  '✗ Attachment upload failed - no permanent URL returned'
+                );
+                attachmentResults.push({
+                  index: i + 1,
+                  url: attachmentUrl,
+                  status: 'failed',
+                  error: 'Upload failed - no URL returned',
+                });
+              }
+            } catch (uploadError) {
+              console.error('✗ Error during attachment upload:', uploadError);
               attachmentResults.push({
                 index: i + 1,
                 url: attachmentUrl,
                 status: 'failed',
-                error: 'Upload failed',
+                error: uploadError.message || 'Upload error',
               });
             }
           }
@@ -956,21 +986,32 @@ Contact Information:
           const totalCount = attachmentResults.length;
           let statusText = '';
 
-          if (successCount === totalCount) {
-            statusText = `✓ ${successCount} attachment(s) uploaded successfully`;
-          } else if (successCount > 0) {
-            statusText = `⚠ ${successCount}/${totalCount} attachment(s) uploaded successfully`;
-          } else {
-            statusText = `✗ Failed to upload ${totalCount} attachment(s)`;
-          }
+          // Only show message if there were actual attempts
+          if (totalCount > 0) {
+            if (successCount === totalCount) {
+              statusText = `✓ ${successCount} attachment(s) uploaded successfully`;
+            } else if (successCount > 0) {
+              statusText = `⚠ ${successCount}/${totalCount} attachment(s) uploaded successfully`;
+            } else {
+              // Only show failure message if we actually tried to upload
+              const attemptedCount = attachmentResults.filter(
+                (r) => r.status !== 'invalid_url'
+              ).length;
+              if (attemptedCount > 0) {
+                statusText = `✗ Failed to upload ${totalCount} attachment(s)`;
+              } else {
+                statusText = `⚠ ${totalCount} attachment(s) skipped (invalid URLs)`;
+              }
+            }
 
-          components.push({
-            type: 'text',
-            id: 'attachment_status',
-            text: statusText,
-            align: 'center',
-            style: 'paragraph',
-          });
+            components.push({
+              type: 'text',
+              id: 'attachment_status',
+              text: statusText,
+              align: 'center',
+              style: 'paragraph',
+            });
+          }
         }
 
         const syncedFieldsText =
