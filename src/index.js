@@ -284,6 +284,44 @@ async function updateTicketAsanaStatus(ticketId, status) {
   }
 }
 
+// Helper function to update Intercom ticket state ID based on Asana completion status
+async function updateTicketStateId(ticketId, isCompleted) {
+  try {
+    const stateId = isCompleted ? '3480795' : '3480792';
+    console.log(
+      `Updating ticket ${ticketId} ticket_state_id to: "${stateId}" (completed: ${isCompleted})`
+    );
+
+    const response = await fetch(
+      `https://api.intercom.io/tickets/${ticketId}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${INTERCOM_TOKEN}`,
+          'Intercom-Version': '2.14',
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          ticket_state_id: stateId,
+        }),
+      }
+    );
+
+    if (response.ok) {
+      console.log(`✓ Successfully updated ticket_state_id to "${stateId}"`);
+      return true;
+    } else {
+      const errorData = await response.json();
+      console.error('✗ Error updating ticket_state_id:', errorData);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error updating ticket_state_id:', error);
+    return false;
+  }
+}
+
 // Helper function to get custom field settings for a project
 async function getAsanaCustomFields() {
   try {
@@ -1184,14 +1222,11 @@ app.post('/asana-webhook-prod', async (req, res) => {
             continue;
           }
 
-          // Update Intercom ticket based on completion status
-          if (isCompleted) {
-            console.log('  → Updating ticket to "Completed"');
-            await updateTicketAsanaStatus(ticketId, 'Completed');
-          } else {
-            console.log('  → Clearing ticket Asana Status');
-            await updateTicketAsanaStatus(ticketId, '');
-          }
+          // Update Intercom ticket state ID based on completion status
+          console.log(
+            `  → Updating ticket_state_id (completed: ${isCompleted})`
+          );
+          await updateTicketStateId(ticketId, isCompleted);
         } else {
           console.error('  ✗ Failed to fetch task details');
         }
