@@ -575,13 +575,13 @@ async function initializeCustomFieldMappings() {
           `✓ Mapped "${fieldName}" → ${fieldGid} (type: ${fieldType})`
         );
 
-        // Warn if Ticket Due Date is not a date type
-        if (fieldName === 'Ticket Due Date' && fieldType !== 'date') {
+        // Warn if Ticket Due Date is not a text type (we format with time now)
+        if (fieldName === 'Ticket Due Date' && fieldType !== 'text') {
           console.warn(
-            `⚠️ WARNING: "${fieldName}" is type "${fieldType}" but should be "date"`
+            `⚠️ WARNING: "${fieldName}" is type "${fieldType}" but should be "text"`
           );
           console.warn(
-            '   Due date syncing will be DISABLED. Please change the field type in Asana to "date".'
+            '   Due date syncing will be DISABLED. Please change the field type in Asana to "text".'
           );
         }
       }
@@ -630,7 +630,8 @@ function isValidUrl(string) {
   }
 }
 
-// Helper function to format date for Asana (expects YYYY-MM-DD format)
+// Helper function to format date for Asana as text in Singapore timezone
+// Format: M/D/YYYY, h:mm AM/PM
 function formatDateForAsana(dateValue) {
   if (!dateValue) return null;
 
@@ -659,12 +660,21 @@ function formatDateForAsana(dateValue) {
       return null;
     }
 
-    // Format to YYYY-MM-DD
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
+    // Format to Singapore timezone: M/D/YYYY, h:mm AM/PM
+    const options = {
+      timeZone: 'Asia/Singapore',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    };
 
-    return `${year}-${month}-${day}`;
+    const formatter = new Intl.DateTimeFormat('en-US', options);
+    const formattedDate = formatter.format(date);
+
+    return formattedDate;
   } catch (error) {
     console.error('Error formatting date:', error);
     return null;
@@ -1495,16 +1505,17 @@ Contact Information:
       if (ASANA_CUSTOM_FIELDS.AGENT_REMARK && agentRemark) {
         customFields[ASANA_CUSTOM_FIELDS.AGENT_REMARK] = String(agentRemark);
       }
-      // Add Due Date field - only if field type is 'date'
+      // Add Due Date field - formatted as text in Singapore timezone
       if (ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE && dueDate) {
         const fieldType = customFieldTypes['TICKET_DUE_DATE'];
 
-        if (fieldType === 'date') {
+        if (fieldType === 'text') {
+          // Format date as text: M/D/YYYY, h:mm AM/PM (Singapore time)
           const formattedDate = formatDateForAsana(dueDate);
           if (formattedDate) {
             customFields[ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE] = formattedDate;
             console.log(
-              'Adding Due Date to Asana custom field:',
+              'Adding Due Date to Asana custom field (text):',
               formattedDate,
               '(original:',
               dueDate,
@@ -1513,12 +1524,19 @@ Contact Information:
           } else {
             console.warn('Could not format Due Date for Asana:', dueDate);
           }
-        } else {
+        } else if (fieldType === 'date') {
           console.warn(
-            `⚠️ Skipping Due Date sync: Field type is "${fieldType}", expected "date"`
+            `⚠️ Skipping Due Date sync: Field type is "date", expected "text"`
           );
           console.warn(
-            'Please change "Ticket Due Date" field type to "date" in Asana project settings.'
+            'Due date is now formatted as text with time. Please change "Ticket Due Date" field type to "text" in Asana.'
+          );
+        } else {
+          console.warn(
+            `⚠️ Unexpected field type for Ticket Due Date: "${fieldType}"`
+          );
+          console.warn(
+            'Expected "text" field type for formatted date with time.'
           );
         }
       }
