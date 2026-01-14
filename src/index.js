@@ -26,8 +26,9 @@ const ASANA_CUSTOM_FIELDS = {
   TICKET_DUE_DATE: null, // For syncing due date between Asana and Intercom
 };
 
-// Cache for custom field mappings
+// Cache for custom field mappings and types
 let customFieldsCache = null;
+let customFieldTypes = {};
 
 // Intercom configuration
 const INTERCOM_TOKEN =
@@ -64,14 +65,14 @@ const initialCanvas = {
         {
           type: 'text',
           id: 'header',
-          text: '🎯 Asana Integration',
+          text: 'Asana Integration',
           align: 'center',
           style: 'header',
         },
         {
           type: 'text',
           id: 'description',
-          text: 'Create a task in Asana from this ticket',
+          text: 'Create Asana Task for Ticket',
           align: 'center',
           style: 'muted',
         },
@@ -82,7 +83,7 @@ const initialCanvas = {
         },
         {
           type: 'button',
-          label: '✨ Create Asana Task',
+          label: 'Create Task',
           style: 'primary',
           id: 'submit_button',
           action: {
@@ -508,6 +509,31 @@ async function getAsanaCustomFields() {
   }
 }
 
+// Helper function to get custom field details including type
+async function getCustomFieldDetails(fieldGid) {
+  try {
+    const response = await fetch(
+      `https://app.asana.com/api/1.0/custom_fields/${fieldGid}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${ASANA_TOKEN}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.data;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error fetching custom field details:', error);
+    return null;
+  }
+}
+
 // Helper function to initialize custom field mappings
 async function initializeCustomFieldMappings() {
   try {
@@ -523,6 +549,7 @@ async function initializeCustomFieldMappings() {
     }
 
     const mappings = {};
+    const fieldTypes = {};
     const fieldNames = {
       Wallet: 'WALLET',
       'Payment Gateway': 'PAYMENT_GATEWAY',
@@ -534,22 +561,39 @@ async function initializeCustomFieldMappings() {
       'Ticket Due Date': 'TICKET_DUE_DATE',
     };
 
-    // Map custom field names to their GIDs
+    // Map custom field names to their GIDs and types
     customFieldSettings.forEach((setting) => {
       const fieldName = setting.custom_field.name;
       const fieldGid = setting.custom_field.gid;
+      const fieldType = setting.custom_field.resource_subtype;
 
       if (fieldNames[fieldName]) {
         const mappingKey = fieldNames[fieldName];
         mappings[mappingKey] = fieldGid;
-        console.log(`✓ Mapped "${fieldName}" → ${fieldGid}`);
+        fieldTypes[mappingKey] = fieldType;
+        console.log(
+          `✓ Mapped "${fieldName}" → ${fieldGid} (type: ${fieldType})`
+        );
+
+        // Warn if Ticket Due Date is not a date type
+        if (fieldName === 'Ticket Due Date' && fieldType !== 'date') {
+          console.warn(
+            `⚠️ WARNING: "${fieldName}" is type "${fieldType}" but should be "date"`
+          );
+          console.warn(
+            '   Due date syncing will be DISABLED. Please change the field type in Asana to "date".'
+          );
+        }
       }
     });
 
-    // Update the global ASANA_CUSTOM_FIELDS object
+    // Update the global ASANA_CUSTOM_FIELDS object and store types
     Object.keys(mappings).forEach((key) => {
       ASANA_CUSTOM_FIELDS[key] = mappings[key];
     });
+
+    // Store field types globally
+    customFieldTypes = fieldTypes;
 
     // Check which fields are missing
     const missingFields = Object.keys(fieldNames).filter(
@@ -1120,13 +1164,13 @@ app.post('/submit', async (req, res) => {
         {
           type: 'input',
           id: 'comment_input',
-          label: '✏️ Add a comment',
+          label: 'Add a comment',
           placeholder: 'Type your comment here...',
           value: '',
         },
         {
           type: 'button',
-          label: '📤 Send Comment',
+          label: 'Send Comment 💬',
           style: 'primary',
           id: 'send_comment_button',
           action: {
@@ -1451,20 +1495,31 @@ Contact Information:
       if (ASANA_CUSTOM_FIELDS.AGENT_REMARK && agentRemark) {
         customFields[ASANA_CUSTOM_FIELDS.AGENT_REMARK] = String(agentRemark);
       }
-      // Add Due Date field
+      // Add Due Date field - only if field type is 'date'
       if (ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE && dueDate) {
-        const formattedDate = formatDateForAsana(dueDate);
-        if (formattedDate) {
-          customFields[ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE] = formattedDate;
-          console.log(
-            'Adding Due Date to Asana custom field:',
-            formattedDate,
-            '(original:',
-            dueDate,
-            ')'
-          );
+        const fieldType = customFieldTypes['TICKET_DUE_DATE'];
+
+        if (fieldType === 'date') {
+          const formattedDate = formatDateForAsana(dueDate);
+          if (formattedDate) {
+            customFields[ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE] = formattedDate;
+            console.log(
+              'Adding Due Date to Asana custom field:',
+              formattedDate,
+              '(original:',
+              dueDate,
+              ')'
+            );
+          } else {
+            console.warn('Could not format Due Date for Asana:', dueDate);
+          }
         } else {
-          console.warn('Could not format Due Date for Asana:', dueDate);
+          console.warn(
+            `⚠️ Skipping Due Date sync: Field type is "${fieldType}", expected "date"`
+          );
+          console.warn(
+            'Please change "Ticket Due Date" field type to "date" in Asana project settings.'
+          );
         }
       }
       // Add Ticket Status for webhook sync (enum field requires option ID)
@@ -1499,7 +1554,10 @@ Contact Information:
 
       console.log('Custom fields to sync:', Object.keys(customFields).length);
       if (Object.keys(customFields).length > 0) {
-        console.log('Custom field values (as strings):', customFields);
+        console.log(
+          'Custom field values:',
+          JSON.stringify(customFields, null, 2)
+        );
       }
 
       // Create task payload
@@ -1533,6 +1591,27 @@ Contact Information:
       });
 
       const asanaData = await asanaResponse.json();
+
+      // Log detailed error if task creation failed
+      if (!asanaResponse.ok) {
+        console.error('Asana API Error Response:');
+        console.error('Status:', asanaResponse.status);
+        console.error('Response:', JSON.stringify(asanaData, null, 2));
+
+        // Check if it's a date field error
+        if (
+          asanaData.errors &&
+          asanaData.errors[0]?.message?.includes('date')
+        ) {
+          console.error('⚠️ Date field error detected!');
+          console.error(
+            'This usually means the "Ticket Due Date" field in Asana is not configured as a "date" type.'
+          );
+          console.error(
+            'Please check the field type in your Asana project settings.'
+          );
+        }
+      }
 
       if (asanaResponse.ok) {
         const asanaTaskId = asanaData.data.gid;
