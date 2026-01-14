@@ -62,7 +62,7 @@ const initialCanvas = {
         {
           type: 'text',
           id: 'header',
-          text: 'Create Asana Task for Contact',
+          text: 'Create Asana Task for Ticket',
           align: 'center',
           style: 'header',
         },
