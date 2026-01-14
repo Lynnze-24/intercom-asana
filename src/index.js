@@ -64,13 +64,25 @@ const initialCanvas = {
         {
           type: 'text',
           id: 'header',
-          text: 'Create Asana Task for Ticket',
+          text: '🎯 Asana Integration',
           align: 'center',
           style: 'header',
         },
         {
+          type: 'text',
+          id: 'description',
+          text: 'Create a task in Asana from this ticket',
+          align: 'center',
+          style: 'muted',
+        },
+        {
+          type: 'spacer',
+          id: 'spacer_1',
+          size: 's',
+        },
+        {
           type: 'button',
-          label: 'Create Asana Task',
+          label: '✨ Create Asana Task',
           style: 'primary',
           id: 'submit_button',
           action: {
@@ -771,13 +783,23 @@ app.get('/asana-custom-fields', async (req, res) => {
 
 // Helper endpoint to view webhook setup information
 app.get('/webhook-info', (req, res) => {
-  const webhookUrl = `${req.protocol}://${req.get('host')}/asana-webhook`;
+  const webhookUrl = `${req.protocol}://${req.get('host')}/asana-webhook-prod`;
 
   res.json({
     success: true,
     webhook_url: webhookUrl,
     webhook_secret_stored: asanaWebhookSecret ? true : false,
     project_gid: ASANA_PROJECT,
+    custom_field_mappings: {
+      WALLET: ASANA_CUSTOM_FIELDS.WALLET,
+      PAYMENT_GATEWAY: ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY,
+      TRANSACTION_ID: ASANA_CUSTOM_FIELDS.TRANSACTION_ID,
+      AMOUNT: ASANA_CUSTOM_FIELDS.AMOUNT,
+      AGENT_REMARK: ASANA_CUSTOM_FIELDS.AGENT_REMARK,
+      INTERCOM_CONVERSATION_ID: ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID,
+      TICKET_STATUS: ASANA_CUSTOM_FIELDS.TICKET_STATUS,
+      TICKET_DUE_DATE: ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE,
+    },
     setup_instructions: {
       step1:
         'Make sure this server is publicly accessible (use ngrok for local development)',
@@ -837,54 +859,95 @@ app.post('/initialize', async (req, res) => {
             align: 'center',
             style: 'paragraph',
           },
+          {
+            type: 'divider',
+            id: 'divider_1',
+          },
         ];
 
         // Add comment list
         if (comments && comments.length > 0) {
-          components.push({
-            type: 'text',
-            id: 'comments_header',
-            text: 'Comments:',
-            align: 'left',
-            style: 'header',
-          });
+          components.push(
+            {
+              type: 'text',
+              id: 'comments_header',
+              text: '💬 Comments',
+              align: 'left',
+              style: 'header',
+            },
+            {
+              type: 'spacer',
+              id: 'spacer_comments',
+              size: 's',
+            }
+          );
 
           comments.forEach((comment, index) => {
-            components.push({
-              type: 'text',
-              id: `comment_${index}`,
-              text: `${comment.created_by?.name || 'Unknown'}: ${comment.text}`,
-              align: 'left',
-              style: 'paragraph',
-            });
+            components.push(
+              {
+                type: 'text',
+                id: `comment_author_${index}`,
+                text: `👤 ${comment.created_by?.name || 'Unknown'}`,
+                align: 'left',
+                style: 'muted',
+              },
+              {
+                type: 'text',
+                id: `comment_text_${index}`,
+                text: comment.text,
+                align: 'left',
+                style: 'paragraph',
+              }
+            );
+
+            // Add divider between comments, but not after the last one
+            if (index < comments.length - 1) {
+              components.push({
+                type: 'divider',
+                id: `comment_divider_${index}`,
+              });
+            }
           });
         } else {
-          components.push({
-            type: 'text',
-            id: 'no_comments',
-            text: 'No comments yet',
-            align: 'left',
-            style: 'paragraph',
-          });
+          components.push(
+            {
+              type: 'text',
+              id: 'comments_header',
+              text: '💬 Comments',
+              align: 'left',
+              style: 'header',
+            },
+            {
+              type: 'text',
+              id: 'no_comments',
+              text: 'No comments yet',
+              align: 'left',
+              style: 'muted',
+            }
+          );
         }
 
         // Add comment input and button
         components.push(
           {
+            type: 'divider',
+            id: 'divider_input',
+          },
+          {
             type: 'spacer',
             id: 'spacer_1',
-            size: 'l',
+            size: 's',
           },
           {
             type: 'input',
             id: 'comment_input',
-            label: 'Add a comment',
+            label: '✏️ Add a comment',
             placeholder: 'Type your comment here...',
             value: '',
           },
           {
             type: 'button',
-            label: 'Send Comment',
+            label: '📤 Send Comment',
             style: 'primary',
             id: 'send_comment_button',
             action: {
@@ -933,9 +996,16 @@ app.post('/submit', async (req, res) => {
                 {
                   type: 'text',
                   id: 'error',
-                  text: 'Please enter a comment',
+                  text: '⚠️ Error',
                   align: 'center',
                   style: 'header',
+                },
+                {
+                  type: 'text',
+                  id: 'error_message',
+                  text: 'Please enter a comment before sending',
+                  align: 'center',
+                  style: 'paragraph',
                 },
               ],
             },
@@ -974,7 +1044,7 @@ app.post('/submit', async (req, res) => {
         {
           type: 'text',
           id: 'success',
-          text: '✓ Comment Added',
+          text: '✓ Comment Added Successfully',
           align: 'center',
           style: 'header',
         },
@@ -985,46 +1055,78 @@ app.post('/submit', async (req, res) => {
           align: 'center',
           style: 'paragraph',
         },
+        {
+          type: 'divider',
+          id: 'divider_1',
+        },
       ];
 
       // Add comment list
       if (comments && comments.length > 0) {
-        components.push({
-          type: 'text',
-          id: 'comments_header',
-          text: 'Comments:',
-          align: 'left',
-          style: 'header',
-        });
+        components.push(
+          {
+            type: 'text',
+            id: 'comments_header',
+            text: '💬 Comments',
+            align: 'left',
+            style: 'header',
+          },
+          {
+            type: 'spacer',
+            id: 'spacer_comments',
+            size: 's',
+          }
+        );
 
         comments.forEach((c, index) => {
-          components.push({
-            type: 'text',
-            id: `comment_${index}`,
-            text: `${c.created_by?.name || 'Unknown'}: ${c.text}`,
-            align: 'left',
-            style: 'paragraph',
-          });
+          components.push(
+            {
+              type: 'text',
+              id: `comment_author_${index}`,
+              text: `👤 ${c.created_by?.name || 'Unknown'}`,
+              align: 'left',
+              style: 'muted',
+            },
+            {
+              type: 'text',
+              id: `comment_text_${index}`,
+              text: c.text,
+              align: 'left',
+              style: 'paragraph',
+            }
+          );
+
+          // Add divider between comments, but not after the last one
+          if (index < comments.length - 1) {
+            components.push({
+              type: 'divider',
+              id: `comment_divider_${index}`,
+            });
+          }
         });
       }
 
       // Add comment input and button
       components.push(
         {
+          type: 'divider',
+          id: 'divider_input',
+        },
+        {
           type: 'spacer',
           id: 'spacer_1',
-          size: 'l',
+          size: 's',
         },
         {
           type: 'input',
           id: 'comment_input',
-          label: 'Add a comment',
+          label: '✏️ Add a comment',
           placeholder: 'Type your comment here...',
           value: '',
         },
         {
           type: 'button',
-          label: 'Send Comment',
+          label: '📤 Send Comment',
           style: 'primary',
           id: 'send_comment_button',
           action: {
@@ -1052,9 +1154,13 @@ app.post('/submit', async (req, res) => {
               {
                 type: 'text',
                 id: 'error',
-                text: 'Error Adding Comment',
+                text: '❌ Error Adding Comment',
                 align: 'center',
                 style: 'header',
+              },
+              {
+                type: 'divider',
+                id: 'divider_1',
               },
               {
                 type: 'text',
@@ -1089,7 +1195,7 @@ app.post('/submit', async (req, res) => {
             {
               type: 'text',
               id: 'already_submitted',
-              text: 'Task already created for this ticket',
+              text: '✓ Task Already Exists',
               align: 'center',
               style: 'header',
             },
@@ -1100,56 +1206,95 @@ app.post('/submit', async (req, res) => {
               align: 'center',
               style: 'paragraph',
             },
+            {
+              type: 'divider',
+              id: 'divider_1',
+            },
           ];
 
           // Add comment list
           if (comments && comments.length > 0) {
-            components.push({
-              type: 'text',
-              id: 'comments_header',
-              text: 'Comments:',
-              align: 'left',
-              style: 'header',
-            });
+            components.push(
+              {
+                type: 'text',
+                id: 'comments_header',
+                text: '💬 Comments',
+                align: 'left',
+                style: 'header',
+              },
+              {
+                type: 'spacer',
+                id: 'spacer_comments',
+                size: 's',
+              }
+            );
 
             comments.forEach((comment, index) => {
-              components.push({
-                type: 'text',
-                id: `comment_${index}`,
-                text: `${comment.created_by?.name || 'Unknown'}: ${
-                  comment.text
-                }`,
-                align: 'left',
-                style: 'paragraph',
-              });
+              components.push(
+                {
+                  type: 'text',
+                  id: `comment_author_${index}`,
+                  text: `👤 ${comment.created_by?.name || 'Unknown'}`,
+                  align: 'left',
+                  style: 'muted',
+                },
+                {
+                  type: 'text',
+                  id: `comment_text_${index}`,
+                  text: comment.text,
+                  align: 'left',
+                  style: 'paragraph',
+                }
+              );
+
+              // Add divider between comments, but not after the last one
+              if (index < comments.length - 1) {
+                components.push({
+                  type: 'divider',
+                  id: `comment_divider_${index}`,
+                });
+              }
             });
           } else {
-            components.push({
-              type: 'text',
-              id: 'no_comments',
-              text: 'No comments yet',
-              align: 'left',
-              style: 'paragraph',
-            });
+            components.push(
+              {
+                type: 'text',
+                id: 'comments_header',
+                text: '💬 Comments',
+                align: 'left',
+                style: 'header',
+              },
+              {
+                type: 'text',
+                id: 'no_comments',
+                text: 'No comments yet',
+                align: 'left',
+                style: 'muted',
+              }
+            );
           }
 
           // Add comment input and button
           components.push(
             {
+              type: 'divider',
+              id: 'divider_input',
+            },
+            {
               type: 'spacer',
               id: 'spacer_1',
-              size: 'l',
+              size: 's',
             },
             {
               type: 'input',
               id: 'comment_input',
-              label: 'Add a comment',
+              label: '✏️ Add a comment',
               placeholder: 'Type your comment here...',
               value: '',
             },
             {
               type: 'button',
-              label: 'Send Comment',
+              label: '📤 Send Comment',
               style: 'primary',
               id: 'send_comment_button',
               action: {
@@ -1208,7 +1353,7 @@ app.post('/submit', async (req, res) => {
       const amount = ticketAttrs.Amount || '';
       const agentRemark = ticketAttrs['Agent Remark'] || '';
       const ticketStatus = ticketAttrs['Ticket Status'] || '';
-      const dueDate = ticketAttrs['Due date'] || '';
+      const dueDate = ticketAttrs['Due Date'] || '';
 
       // Handle attachments from ticket attributes
       // Ticket attachment format: array of objects with url property
@@ -1484,23 +1629,27 @@ Contact Information:
           {
             type: 'text',
             id: 'success',
-            text: '✓ Asana Task Created',
+            text: '✅ Asana Task Created',
             align: 'center',
             style: 'header',
           },
           {
             type: 'text',
             id: 'task_name',
-            text: `Task: ${contactName}`,
+            text: `📋 ${contactName}`,
             align: 'center',
             style: 'paragraph',
           },
           {
             type: 'text',
             id: 'task_id',
-            text: `Task ID: ${asanaTaskId}`,
+            text: `ID: ${asanaTaskId}`,
             align: 'center',
-            style: 'paragraph',
+            style: 'muted',
+          },
+          {
+            type: 'divider',
+            id: 'divider_1',
           },
         ];
 
@@ -1511,100 +1660,146 @@ Contact Information:
           ).length;
           const totalCount = attachmentResults.length;
           let statusText = '';
+          let statusIcon = '';
 
           // Only show message if there were actual attempts
           if (totalCount > 0) {
             if (successCount === totalCount) {
-              statusText = `✓ ${successCount} attachment(s) uploaded successfully`;
+              statusIcon = '📎';
+              statusText = `${successCount} attachment(s) uploaded`;
             } else if (successCount > 0) {
-              statusText = `⚠ ${successCount}/${totalCount} attachment(s) uploaded successfully`;
+              statusIcon = '⚠️';
+              statusText = `${successCount}/${totalCount} attachment(s) uploaded`;
             } else {
               // Only show failure message if we actually tried to upload
               const attemptedCount = attachmentResults.filter(
                 (r) => r.status !== 'invalid_url'
               ).length;
               if (attemptedCount > 0) {
-                statusText = `✗ Failed to upload ${totalCount} attachment(s)`;
+                statusIcon = '❌';
+                statusText = `Failed to upload ${totalCount} attachment(s)`;
               } else {
-                statusText = `⚠ ${totalCount} attachment(s) skipped (invalid URLs)`;
+                statusIcon = '⚠️';
+                statusText = `${totalCount} attachment(s) skipped`;
               }
             }
 
             components.push({
               type: 'text',
               id: 'attachment_status',
-              text: statusText,
+              text: `${statusIcon} ${statusText}`,
               align: 'center',
-              style: 'paragraph',
+              style: 'muted',
             });
           }
         }
 
         const syncedFieldsText =
           Object.keys(customFields).length > 0
-            ? `✓ Synced ${
-                Object.keys(customFields).length
-              } custom fields to Asana`
-            : '⚠ Configure ASANA_CUSTOM_FIELDS to sync custom fields';
+            ? `✓ Synced ${Object.keys(customFields).length} custom fields`
+            : '⚠️ No custom fields synced';
 
-        components.push({
-          type: 'text',
-          id: 'synced_fields',
-          text: syncedFieldsText,
-          align: 'center',
-          style: 'paragraph',
-        });
+        components.push(
+          {
+            type: 'text',
+            id: 'synced_fields',
+            text: syncedFieldsText,
+            align: 'center',
+            style: 'muted',
+          },
+          {
+            type: 'divider',
+            id: 'divider_2',
+          }
+        );
 
         // Fetch existing comments from Asana
         const comments = await getAsanaTaskComments(asanaTaskId);
 
         // Add comment list to components
         if (comments && comments.length > 0) {
-          components.push({
-            type: 'text',
-            id: 'comments_header',
-            text: 'Comments:',
-            align: 'left',
-            style: 'header',
-          });
+          components.push(
+            {
+              type: 'text',
+              id: 'comments_header',
+              text: '💬 Comments',
+              align: 'left',
+              style: 'header',
+            },
+            {
+              type: 'spacer',
+              id: 'spacer_comments',
+              size: 's',
+            }
+          );
 
           // Add each comment as a text component
           comments.forEach((comment, index) => {
-            components.push({
-              type: 'text',
-              id: `comment_${index}`,
-              text: `${comment.created_by?.name || 'Unknown'}: ${comment.text}`,
-              align: 'left',
-              style: 'paragraph',
-            });
+            components.push(
+              {
+                type: 'text',
+                id: `comment_author_${index}`,
+                text: `👤 ${comment.created_by?.name || 'Unknown'}`,
+                align: 'left',
+                style: 'muted',
+              },
+              {
+                type: 'text',
+                id: `comment_text_${index}`,
+                text: comment.text,
+                align: 'left',
+                style: 'paragraph',
+              }
+            );
+
+            // Add divider between comments, but not after the last one
+            if (index < comments.length - 1) {
+              components.push({
+                type: 'divider',
+                id: `comment_divider_${index}`,
+              });
+            }
           });
         } else {
-          components.push({
-            type: 'text',
-            id: 'no_comments',
-            text: 'No comments yet',
-            align: 'left',
-            style: 'paragraph',
-          });
+          components.push(
+            {
+              type: 'text',
+              id: 'comments_header',
+              text: '💬 Comments',
+              align: 'left',
+              style: 'header',
+            },
+            {
+              type: 'text',
+              id: 'no_comments',
+              text: 'No comments yet',
+              align: 'left',
+              style: 'muted',
+            }
+          );
         }
 
         // Add comment input and button
         components.push(
           {
+            type: 'divider',
+            id: 'divider_input',
+          },
+          {
             type: 'spacer',
             id: 'spacer_1',
-            size: 'l',
+            size: 's',
           },
           {
             type: 'input',
             id: 'comment_input',
-            label: 'Add a comment',
+            label: '✏️ Add a comment',
             placeholder: 'Type your comment here...',
             value: '',
           },
           {
             type: 'button',
-            label: 'Send Comment',
+            label: '📤 Send Comment',
             style: 'primary',
             id: 'send_comment_button',
             action: {
@@ -1636,9 +1831,13 @@ Contact Information:
               {
                 type: 'text',
                 id: 'error',
-                text: 'Error Creating Task',
+                text: '❌ Error Creating Task',
                 align: 'center',
                 style: 'header',
+              },
+              {
+                type: 'divider',
+                id: 'divider_1',
               },
               {
                 type: 'text',
@@ -1646,6 +1845,13 @@ Contact Information:
                 text: error.message || 'An unexpected error occurred',
                 align: 'center',
                 style: 'paragraph',
+              },
+              {
+                type: 'text',
+                id: 'error_hint',
+                text: 'Please try again or contact support',
+                align: 'center',
+                style: 'muted',
               },
             ],
           },
@@ -1684,7 +1890,9 @@ app.post('/asana-webhook-prod', async (req, res) => {
 
   // Handle webhook events
   console.log('\n===== ASANA WEBHOOK EVENT =====');
-  console.log('Received webhook event');
+  console.log('Received webhook event at:', new Date().toISOString());
+  console.log('Request headers:', JSON.stringify(req.headers, null, 2));
+  console.log('Request body:', JSON.stringify(req.body, null, 2));
 
   try {
     const events = req.body.events || [];
@@ -1807,6 +2015,24 @@ app.post('/asana-webhook-prod', async (req, res) => {
       ) {
         const taskId = event.resource.gid;
         console.log('  Task changed event for task:', taskId);
+        console.log(
+          '  Event change details:',
+          JSON.stringify(event.change, null, 2)
+        );
+
+        // Check if this is a custom field change
+        let isTicketStatusChange = false;
+        if (event.change && event.change.field === 'custom_fields') {
+          console.log('  ✓ Custom field change detected');
+          // Log the new value if available
+          if (event.change.new_value) {
+            console.log(
+              '  New value:',
+              JSON.stringify(event.change.new_value, null, 2)
+            );
+          }
+          isTicketStatusChange = true;
+        }
 
         // Fetch the task to get custom fields including Ticket Status
         console.log('  Fetching task details from Asana...');
@@ -1825,6 +2051,8 @@ app.post('/asana-webhook-prod', async (req, res) => {
           const taskData = await taskResponse.json();
           const customFields = taskData.data.custom_fields || [];
 
+          console.log(`  Found ${customFields.length} custom fields on task`);
+
           // Get conversation ID and Ticket Status from custom fields
           let conversationId = null;
           let ticketStatus = null;
@@ -1838,13 +2066,49 @@ app.post('/asana-webhook-prod', async (req, res) => {
               );
             }
             if (field.gid === ASANA_CUSTOM_FIELDS.TICKET_STATUS) {
-              // For enum fields, get the display_value or enum_value.name
-              ticketStatus = field.display_value || field.enum_value?.name;
               console.log(
-                '  Found Ticket Status in custom field:',
-                ticketStatus
+                '  Ticket Status field found:',
+                JSON.stringify(field, null, 2)
               );
+
+              // For enum fields, get the value properly
+              if (field.enum_value) {
+                ticketStatus = field.enum_value.name;
+                console.log(
+                  '  Ticket Status from enum_value.name:',
+                  ticketStatus
+                );
+              } else if (field.display_value) {
+                ticketStatus = field.display_value;
+                console.log(
+                  '  Ticket Status from display_value:',
+                  ticketStatus
+                );
+              }
+
+              if (ticketStatus) {
+                console.log(
+                  '  ✓ Found Ticket Status in custom field:',
+                  ticketStatus
+                );
+              } else {
+                console.log('  ⚠ Ticket Status field exists but has no value');
+              }
             }
+          }
+
+          // Log all custom field GIDs for debugging
+          if (customFields.length > 0) {
+            console.log('  All custom field GIDs on task:');
+            customFields.forEach((f) => {
+              const value =
+                f.enum_value?.name ||
+                f.display_value ||
+                f.text_value ||
+                f.number_value ||
+                '(no value)';
+              console.log(`    - ${f.name} (${f.gid}): ${value}`);
+            });
           }
 
           // Fallback to in-memory map if custom field not found
@@ -1880,12 +2144,29 @@ app.post('/asana-webhook-prod', async (req, res) => {
           // Update Intercom ticket's Ticket Status if it changed
           if (ticketStatus) {
             console.log(`  → Updating Ticket Status to: "${ticketStatus}"`);
-            await updateTicketStatus(ticketId, ticketStatus);
+            const updateResult = await updateTicketStatus(
+              ticketId,
+              ticketStatus
+            );
+            if (updateResult) {
+              console.log('  ✓ Successfully updated Intercom ticket status');
+            } else {
+              console.log('  ✗ Failed to update Intercom ticket status');
+            }
           } else {
-            console.log('  ℹ No Ticket Status change detected');
+            console.log('  ℹ No Ticket Status value to sync');
+            console.log(
+              '  Expected custom field GID:',
+              ASANA_CUSTOM_FIELDS.TICKET_STATUS
+            );
           }
         } else {
-          console.error('  ✗ Failed to fetch task details');
+          const errorText = await taskResponse.text();
+          console.error(
+            '  ✗ Failed to fetch task details. Status:',
+            taskResponse.status
+          );
+          console.error('  Error response:', errorText);
         }
       }
     }
