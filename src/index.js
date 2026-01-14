@@ -212,6 +212,70 @@ function findAttachmentUrlById(conversation, attachmentId) {
   return null;
 }
 
+// Helper function to get comments from an Asana task
+async function getAsanaTaskComments(taskId) {
+  try {
+    const response = await fetch(
+      `https://app.asana.com/api/1.0/tasks/${taskId}/stories`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${ASANA_TOKEN}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      // Filter only comment stories (not system events)
+      const comments = data.data.filter(
+        (story) => story.resource_subtype === 'comment_added' && story.text
+      );
+      return comments;
+    }
+    return [];
+  } catch (error) {
+    console.error('Error fetching Asana task comments:', error);
+    return [];
+  }
+}
+
+// Helper function to add a comment to an Asana task
+async function addAsanaTaskComment(taskId, commentText) {
+  try {
+    const response = await fetch(
+      `https://app.asana.com/api/1.0/tasks/${taskId}/stories`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ASANA_TOKEN}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          data: {
+            text: commentText,
+          },
+        }),
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      console.log('Successfully added comment to Asana task');
+      return data.data;
+    } else {
+      const errorData = await response.json();
+      console.error('Error adding comment to Asana:', errorData);
+      return null;
+    }
+  } catch (error) {
+    console.error('Error adding comment to Asana task:', error);
+    return null;
+  }
+}
+
 // Helper function to update Intercom ticket attributes
 async function updateTicketAttribute(ticketId, asanaTaskId) {
   try {
@@ -625,33 +689,84 @@ app.post('/initialize', async (req, res) => {
       const asanaTaskId = ticket?.ticket_attributes?.AsanaTaskID;
 
       if (asanaTaskId) {
-        // Ticket already has an Asana task, show completed state
+        // Ticket already has an Asana task, show commenting UI
+        const comments = await getAsanaTaskComments(asanaTaskId);
+
+        const components = [
+          {
+            type: 'text',
+            id: 'success',
+            text: '✓ Asana Task Already Created',
+            align: 'center',
+            style: 'header',
+          },
+          {
+            type: 'text',
+            id: 'task_id',
+            text: `Task ID: ${asanaTaskId}`,
+            align: 'center',
+            style: 'paragraph',
+          },
+        ];
+
+        // Add comment list
+        if (comments && comments.length > 0) {
+          components.push({
+            type: 'text',
+            id: 'comments_header',
+            text: 'Comments:',
+            align: 'left',
+            style: 'header',
+          });
+
+          comments.forEach((comment, index) => {
+            components.push({
+              type: 'text',
+              id: `comment_${index}`,
+              text: `${comment.created_by?.name || 'Unknown'}: ${comment.text}`,
+              align: 'left',
+              style: 'paragraph',
+            });
+          });
+        } else {
+          components.push({
+            type: 'text',
+            id: 'no_comments',
+            text: 'No comments yet',
+            align: 'left',
+            style: 'paragraph',
+          });
+        }
+
+        // Add comment input and button
+        components.push(
+          {
+            type: 'spacer',
+            id: 'spacer_1',
+            size: 'l',
+          },
+          {
+            type: 'input',
+            id: 'comment_input',
+            label: 'Add a comment',
+            placeholder: 'Type your comment here...',
+            value: '',
+          },
+          {
+            type: 'button',
+            label: 'Send Comment',
+            style: 'primary',
+            id: 'send_comment_button',
+            action: {
+              type: 'submit',
+            },
+          }
+        );
+
         const completedCanvas = {
           canvas: {
             content: {
-              components: [
-                {
-                  type: 'text',
-                  id: 'success',
-                  text: '✓ Asana Task Already Created',
-                  align: 'center',
-                  style: 'header',
-                },
-                {
-                  type: 'text',
-                  id: 'task_id',
-                  text: `Task ID: ${asanaTaskId}`,
-                  align: 'center',
-                  style: 'paragraph',
-                },
-                {
-                  type: 'text',
-                  id: 'info',
-                  text: 'This ticket already has an Asana task associated with it.',
-                  align: 'center',
-                  style: 'paragraph',
-                },
-              ],
+              components: components,
             },
           },
         };
@@ -716,6 +831,157 @@ app.post('/submit', async (req, res) => {
         };
         return res.send(alreadySubmittedCanvas);
       }
+    }
+  }
+
+  // Handle comment submission
+  if (req.body.component_id === 'send_comment_button') {
+    try {
+      const commentText = req.body.input_values?.comment_input;
+
+      if (!commentText || commentText.trim() === '') {
+        const errorCanvas = {
+          canvas: {
+            content: {
+              components: [
+                {
+                  type: 'text',
+                  id: 'error',
+                  text: 'Please enter a comment',
+                  align: 'center',
+                  style: 'header',
+                },
+              ],
+            },
+          },
+        };
+        return res.send(errorCanvas);
+      }
+
+      // Get conversation details to find the Asana task ID
+      const fullConversation = await getConversation(conversationId);
+      const ticketId = fullConversation?.ticket?.id;
+
+      if (!ticketId) {
+        throw new Error('No ticket found for this conversation');
+      }
+
+      const ticket = await getTicket(ticketId);
+      const asanaTaskId = ticket?.ticket_attributes?.AsanaTaskID;
+
+      if (!asanaTaskId) {
+        throw new Error('No Asana task ID found for this ticket');
+      }
+
+      // Add comment to Asana
+      const comment = await addAsanaTaskComment(asanaTaskId, commentText);
+
+      if (!comment) {
+        throw new Error('Failed to add comment to Asana');
+      }
+
+      // Fetch updated comments from Asana
+      const comments = await getAsanaTaskComments(asanaTaskId);
+
+      // Build canvas with updated comments
+      const components = [
+        {
+          type: 'text',
+          id: 'success',
+          text: '✓ Comment Added',
+          align: 'center',
+          style: 'header',
+        },
+        {
+          type: 'text',
+          id: 'task_id',
+          text: `Task ID: ${asanaTaskId}`,
+          align: 'center',
+          style: 'paragraph',
+        },
+      ];
+
+      // Add comment list
+      if (comments && comments.length > 0) {
+        components.push({
+          type: 'text',
+          id: 'comments_header',
+          text: 'Comments:',
+          align: 'left',
+          style: 'header',
+        });
+
+        comments.forEach((c, index) => {
+          components.push({
+            type: 'text',
+            id: `comment_${index}`,
+            text: `${c.created_by?.name || 'Unknown'}: ${c.text}`,
+            align: 'left',
+            style: 'paragraph',
+          });
+        });
+      }
+
+      // Add comment input and button
+      components.push(
+        {
+          type: 'spacer',
+          id: 'spacer_1',
+          size: 'l',
+        },
+        {
+          type: 'input',
+          id: 'comment_input',
+          label: 'Add a comment',
+          placeholder: 'Type your comment here...',
+          value: '',
+        },
+        {
+          type: 'button',
+          label: 'Send Comment',
+          style: 'primary',
+          id: 'send_comment_button',
+          action: {
+            type: 'submit',
+          },
+        }
+      );
+
+      const successCanvas = {
+        canvas: {
+          content: {
+            components: components,
+          },
+        },
+      };
+
+      return res.send(successCanvas);
+    } catch (error) {
+      console.error('Error adding comment:', error);
+
+      const errorCanvas = {
+        canvas: {
+          content: {
+            components: [
+              {
+                type: 'text',
+                id: 'error',
+                text: 'Error Adding Comment',
+                align: 'center',
+                style: 'header',
+              },
+              {
+                type: 'text',
+                id: 'error_message',
+                text: error.message || 'An unexpected error occurred',
+                align: 'center',
+                style: 'paragraph',
+              },
+            ],
+          },
+        },
+      };
+      return res.send(errorCanvas);
     }
   }
 
@@ -1067,6 +1333,64 @@ Contact Information:
           style: 'paragraph',
         });
 
+        // Fetch existing comments from Asana
+        const comments = await getAsanaTaskComments(asanaTaskId);
+
+        // Add comment list to components
+        if (comments && comments.length > 0) {
+          components.push({
+            type: 'text',
+            id: 'comments_header',
+            text: 'Comments:',
+            align: 'left',
+            style: 'header',
+          });
+
+          // Add each comment as a text component
+          comments.forEach((comment, index) => {
+            components.push({
+              type: 'text',
+              id: `comment_${index}`,
+              text: `${comment.created_by?.name || 'Unknown'}: ${comment.text}`,
+              align: 'left',
+              style: 'paragraph',
+            });
+          });
+        } else {
+          components.push({
+            type: 'text',
+            id: 'no_comments',
+            text: 'No comments yet',
+            align: 'left',
+            style: 'paragraph',
+          });
+        }
+
+        // Add comment input and button
+        components.push(
+          {
+            type: 'spacer',
+            id: 'spacer_1',
+            size: 'l',
+          },
+          {
+            type: 'input',
+            id: 'comment_input',
+            label: 'Add a comment',
+            placeholder: 'Type your comment here...',
+            value: '',
+          },
+          {
+            type: 'button',
+            label: 'Send Comment',
+            style: 'primary',
+            id: 'send_comment_button',
+            action: {
+              type: 'submit',
+            },
+          }
+        );
+
         const successCanvas = {
           canvas: {
             content: {
@@ -1149,6 +1473,110 @@ app.post('/asana-webhook-prod', async (req, res) => {
       console.log('  Action:', event.action);
       console.log('  Resource type:', event.resource?.resource_type);
       console.log('  Resource GID:', event.resource?.gid);
+
+      // Process story (comment) events
+      if (
+        event.resource?.resource_type === 'story' &&
+        event.action === 'added' &&
+        event.parent?.resource_type === 'task'
+      ) {
+        const storyId = event.resource.gid;
+        const taskId = event.parent.gid;
+        console.log('  New story added to task:', taskId);
+
+        // Fetch the story details to get the comment text
+        const storyResponse = await fetch(
+          `https://app.asana.com/api/1.0/stories/${storyId}`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${ASANA_TOKEN}`,
+              Accept: 'application/json',
+            },
+          }
+        );
+
+        if (storyResponse.ok) {
+          const storyData = await storyResponse.json();
+          const story = storyData.data;
+
+          // Only process actual comments, not system events
+          if (story.resource_subtype === 'comment_added' && story.text) {
+            console.log('  Comment text:', story.text);
+            console.log('  Created by:', story.created_by?.name);
+
+            // Get conversation ID from task
+            const taskResponse = await fetch(
+              `https://app.asana.com/api/1.0/tasks/${taskId}`,
+              {
+                method: 'GET',
+                headers: {
+                  Authorization: `Bearer ${ASANA_TOKEN}`,
+                  Accept: 'application/json',
+                },
+              }
+            );
+
+            if (taskResponse.ok) {
+              const taskData = await taskResponse.json();
+              const customFields = taskData.data.custom_fields || [];
+
+              let conversationId = null;
+              for (const field of customFields) {
+                if (
+                  field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID
+                ) {
+                  conversationId = field.text_value || field.display_value;
+                  break;
+                }
+              }
+
+              // Fallback to in-memory map
+              if (!conversationId) {
+                conversationId = asanaTaskToConversation.get(taskId);
+              }
+
+              if (conversationId) {
+                console.log('  Found conversation ID:', conversationId);
+
+                // Post comment to Intercom conversation
+                const commentBody = `[Asana Comment by ${
+                  story.created_by?.name || 'Unknown'
+                }]\n${story.text}`;
+
+                const intercomResponse = await fetch(
+                  `https://api.intercom.io/conversations/${conversationId}/reply`,
+                  {
+                    method: 'POST',
+                    headers: {
+                      Authorization: `Bearer ${INTERCOM_TOKEN}`,
+                      'Content-Type': 'application/json',
+                      Accept: 'application/json',
+                    },
+                    body: JSON.stringify({
+                      message_type: 'note',
+                      type: 'admin',
+                      body: commentBody,
+                    }),
+                  }
+                );
+
+                if (intercomResponse.ok) {
+                  console.log('  ✓ Comment posted to Intercom conversation');
+                } else {
+                  const errorData = await intercomResponse.json();
+                  console.error(
+                    '  ✗ Failed to post comment to Intercom:',
+                    errorData
+                  );
+                }
+              } else {
+                console.log('  ⚠ No conversation ID found for this task');
+              }
+            }
+          }
+        }
+      }
 
       // Only process task completion changes
       if (
