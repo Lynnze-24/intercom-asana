@@ -22,6 +22,8 @@ const ASANA_CUSTOM_FIELDS = {
   AMOUNT: null,
   AGENT_REMARK: null,
   INTERCOM_CONVERSATION_ID: null, // For webhook sync back to Intercom
+  TICKET_STATUS: null, // For syncing ticket status between Asana and Intercom
+  TICKET_DUE_DATE: null, // For syncing due date between Asana and Intercom
 };
 
 // Cache for custom field mappings
@@ -311,6 +313,43 @@ async function updateTicketAttribute(ticketId, asanaTaskId) {
   }
 }
 
+// Helper function to update Intercom ticket Ticket Status field
+async function updateTicketStatus(ticketId, status) {
+  try {
+    console.log(`Updating ticket ${ticketId} Ticket Status to: "${status}"`);
+
+    const response = await fetch(
+      `https://api.intercom.io/tickets/${ticketId}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${INTERCOM_TOKEN}`,
+          'Intercom-Version': '2.14',
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          ticket_attributes: {
+            'Ticket Status': status,
+          },
+        }),
+      }
+    );
+
+    if (response.ok) {
+      console.log(`✓ Successfully updated Ticket Status to "${status}"`);
+      return true;
+    } else {
+      const errorData = await response.json();
+      console.error('✗ Error updating Ticket Status:', errorData);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error updating Ticket Status:', error);
+    return false;
+  }
+}
+
 // Helper function to update Intercom ticket Asana Status field
 async function updateTicketAsanaStatus(ticketId, status) {
   try {
@@ -386,6 +425,52 @@ async function updateTicketStateId(ticketId, isCompleted) {
   }
 }
 
+// Helper function to get enum option ID from custom field
+async function getAsanaEnumOptionId(fieldGid, optionName) {
+  try {
+    const response = await fetch(
+      `https://app.asana.com/api/1.0/custom_fields/${fieldGid}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${ASANA_TOKEN}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      const enumOptions = data.data.enum_options || [];
+
+      // Find the option that matches the name
+      const matchingOption = enumOptions.find(
+        (option) => option.name === optionName
+      );
+
+      if (matchingOption) {
+        console.log(
+          `Found enum option ID for "${optionName}": ${matchingOption.gid}`
+        );
+        return matchingOption.gid;
+      } else {
+        console.warn(
+          `No enum option found for "${optionName}" in field ${fieldGid}`
+        );
+        console.warn(
+          'Available options:',
+          enumOptions.map((o) => o.name).join(', ')
+        );
+        return null;
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error('Error fetching enum options:', error);
+    return null;
+  }
+}
+
 // Helper function to get custom field settings for a project
 async function getAsanaCustomFields() {
   try {
@@ -433,6 +518,8 @@ async function initializeCustomFieldMappings() {
       Amount: 'AMOUNT',
       'Agent Remark': 'AGENT_REMARK',
       'Intercom Conversation ID': 'INTERCOM_CONVERSATION_ID',
+      'Ticket Status': 'TICKET_STATUS',
+      'Ticket Due Date': 'TICKET_DUE_DATE',
     };
 
     // Map custom field names to their GIDs
@@ -484,6 +571,47 @@ function isValidUrl(string) {
     return url.protocol === 'http:' || url.protocol === 'https:';
   } catch (err) {
     return false;
+  }
+}
+
+// Helper function to format date for Asana (expects YYYY-MM-DD format)
+function formatDateForAsana(dateValue) {
+  if (!dateValue) return null;
+
+  try {
+    let date;
+
+    // Handle Unix timestamp (number or string number)
+    if (typeof dateValue === 'number' || !isNaN(Number(dateValue))) {
+      date = new Date(Number(dateValue) * 1000); // Convert seconds to milliseconds
+    }
+    // Handle ISO string or other date formats
+    else if (typeof dateValue === 'string') {
+      date = new Date(dateValue);
+    }
+    // Handle Date object
+    else if (dateValue instanceof Date) {
+      date = dateValue;
+    } else {
+      console.warn('Unknown date format:', dateValue);
+      return null;
+    }
+
+    // Validate the date
+    if (isNaN(date.getTime())) {
+      console.warn('Invalid date value:', dateValue);
+      return null;
+    }
+
+    // Format to YYYY-MM-DD
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+
+    return `${year}-${month}-${day}`;
+  } catch (error) {
+    console.error('Error formatting date:', error);
+    return null;
   }
 }
 
@@ -621,6 +749,8 @@ app.get('/asana-custom-fields', async (req, res) => {
           AGENT_REMARK: ASANA_CUSTOM_FIELDS.AGENT_REMARK,
           INTERCOM_CONVERSATION_ID:
             ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID,
+          TICKET_STATUS: ASANA_CUSTOM_FIELDS.TICKET_STATUS,
+          TICKET_DUE_DATE: ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE,
         },
         message:
           'Custom fields are automatically mapped on server start. Check mapped_fields to see current mappings.',
@@ -790,51 +920,7 @@ app.post('/submit', async (req, res) => {
 
   const conversationId = req.body.conversation?.id;
 
-  // Check if this conversation already has an Asana task
-  if (conversationId) {
-    const conversation = await getConversation(conversationId);
-    const ticketId = conversation?.ticket?.id;
-
-    if (ticketId) {
-      const ticket = await getTicket(ticketId);
-      const existingTaskId = ticket?.ticket_attributes?.AsanaTaskID;
-
-      if (existingTaskId) {
-        const alreadySubmittedCanvas = {
-          canvas: {
-            content: {
-              components: [
-                {
-                  type: 'text',
-                  id: 'already_submitted',
-                  text: 'Task already created for this ticket',
-                  align: 'center',
-                  style: 'header',
-                },
-                {
-                  type: 'text',
-                  id: 'task_id',
-                  text: `Task ID: ${existingTaskId}`,
-                  align: 'center',
-                  style: 'paragraph',
-                },
-                {
-                  type: 'text',
-                  id: 'info',
-                  text: 'You can only create one Asana task per ticket.',
-                  align: 'center',
-                  style: 'paragraph',
-                },
-              ],
-            },
-          },
-        };
-        return res.send(alreadySubmittedCanvas);
-      }
-    }
-  }
-
-  // Handle comment submission
+  // Handle comment submission FIRST (before duplicate task check)
   if (req.body.component_id === 'send_comment_button') {
     try {
       const commentText = req.body.input_values?.comment_input;
@@ -985,7 +1071,105 @@ app.post('/submit', async (req, res) => {
     }
   }
 
+  // Check if this conversation already has an Asana task (only for submit_button)
   if (req.body.component_id === 'submit_button') {
+    if (conversationId) {
+      const conversation = await getConversation(conversationId);
+      const ticketId = conversation?.ticket?.id;
+
+      if (ticketId) {
+        const ticket = await getTicket(ticketId);
+        const existingTaskId = ticket?.ticket_attributes?.AsanaTaskID;
+
+        if (existingTaskId) {
+          // Task already exists, show comment UI instead
+          const comments = await getAsanaTaskComments(existingTaskId);
+
+          const components = [
+            {
+              type: 'text',
+              id: 'already_submitted',
+              text: 'Task already created for this ticket',
+              align: 'center',
+              style: 'header',
+            },
+            {
+              type: 'text',
+              id: 'task_id',
+              text: `Task ID: ${existingTaskId}`,
+              align: 'center',
+              style: 'paragraph',
+            },
+          ];
+
+          // Add comment list
+          if (comments && comments.length > 0) {
+            components.push({
+              type: 'text',
+              id: 'comments_header',
+              text: 'Comments:',
+              align: 'left',
+              style: 'header',
+            });
+
+            comments.forEach((comment, index) => {
+              components.push({
+                type: 'text',
+                id: `comment_${index}`,
+                text: `${comment.created_by?.name || 'Unknown'}: ${
+                  comment.text
+                }`,
+                align: 'left',
+                style: 'paragraph',
+              });
+            });
+          } else {
+            components.push({
+              type: 'text',
+              id: 'no_comments',
+              text: 'No comments yet',
+              align: 'left',
+              style: 'paragraph',
+            });
+          }
+
+          // Add comment input and button
+          components.push(
+            {
+              type: 'spacer',
+              id: 'spacer_1',
+              size: 'l',
+            },
+            {
+              type: 'input',
+              id: 'comment_input',
+              label: 'Add a comment',
+              placeholder: 'Type your comment here...',
+              value: '',
+            },
+            {
+              type: 'button',
+              label: 'Send Comment',
+              style: 'primary',
+              id: 'send_comment_button',
+              action: {
+                type: 'submit',
+              },
+            }
+          );
+
+          const alreadySubmittedCanvas = {
+            canvas: {
+              content: {
+                components: components,
+              },
+            },
+          };
+          return res.send(alreadySubmittedCanvas);
+        }
+      }
+    }
+
     try {
       // Extract contact name from Intercom data
       let contactName =
@@ -1017,12 +1201,14 @@ app.post('/submit', async (req, res) => {
 
       const ticketAttrs = ticket?.ticket_attributes || {};
 
-      // Extract the 5 custom fields from ticket attributes
+      // Extract the custom fields from ticket attributes
       const wallet = ticketAttrs.Wallet || '';
       const paymentGateway = ticketAttrs['Payment Gateway'] || '';
       const transactionID = ticketAttrs['Transaction ID'] || '';
       const amount = ticketAttrs.Amount || '';
       const agentRemark = ticketAttrs['Agent Remark'] || '';
+      const ticketStatus = ticketAttrs['Ticket Status'] || '';
+      const dueDate = ticketAttrs['Due date'] || '';
 
       // Handle attachments from ticket attributes
       // Ticket attachment format: array of objects with url property
@@ -1119,6 +1305,42 @@ Contact Information:
       }
       if (ASANA_CUSTOM_FIELDS.AGENT_REMARK && agentRemark) {
         customFields[ASANA_CUSTOM_FIELDS.AGENT_REMARK] = String(agentRemark);
+      }
+      // Add Due Date field
+      if (ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE && dueDate) {
+        const formattedDate = formatDateForAsana(dueDate);
+        if (formattedDate) {
+          customFields[ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE] = formattedDate;
+          console.log(
+            'Adding Due Date to Asana custom field:',
+            formattedDate,
+            '(original:',
+            dueDate,
+            ')'
+          );
+        } else {
+          console.warn('Could not format Due Date for Asana:', dueDate);
+        }
+      }
+      // Add Ticket Status for webhook sync (enum field requires option ID)
+      if (ASANA_CUSTOM_FIELDS.TICKET_STATUS && ticketStatus) {
+        console.log(
+          'Looking up enum option ID for Ticket Status:',
+          ticketStatus
+        );
+        const enumOptionId = await getAsanaEnumOptionId(
+          ASANA_CUSTOM_FIELDS.TICKET_STATUS,
+          ticketStatus
+        );
+        if (enumOptionId) {
+          customFields[ASANA_CUSTOM_FIELDS.TICKET_STATUS] = enumOptionId;
+          console.log(
+            'Adding Ticket Status to Asana custom field:',
+            ticketStatus
+          );
+        } else {
+          console.warn('Could not find enum option ID for:', ticketStatus);
+        }
       }
       // Add Intercom conversation ID for webhook sync
       if (ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID && conversationId) {
@@ -1578,7 +1800,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
         }
       }
 
-      // Only process task completion changes
+      // Only process task field changes
       if (
         event.resource?.resource_type === 'task' &&
         event.action === 'changed'
@@ -1586,7 +1808,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
         const taskId = event.resource.gid;
         console.log('  Task changed event for task:', taskId);
 
-        // Fetch the task to get completion status and conversation ID
+        // Fetch the task to get custom fields including Ticket Status
         console.log('  Fetching task details from Asana...');
         const taskResponse = await fetch(
           `https://app.asana.com/api/1.0/tasks/${taskId}`,
@@ -1601,13 +1823,11 @@ app.post('/asana-webhook-prod', async (req, res) => {
 
         if (taskResponse.ok) {
           const taskData = await taskResponse.json();
-          const isCompleted = taskData.data.completed;
-
-          console.log('  Task completion status:', isCompleted);
-
-          // Get conversation ID from custom fields
-          let conversationId = null;
           const customFields = taskData.data.custom_fields || [];
+
+          // Get conversation ID and Ticket Status from custom fields
+          let conversationId = null;
+          let ticketStatus = null;
 
           for (const field of customFields) {
             if (field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID) {
@@ -1616,7 +1836,14 @@ app.post('/asana-webhook-prod', async (req, res) => {
                 '  Found conversation ID in custom field:',
                 conversationId
               );
-              break;
+            }
+            if (field.gid === ASANA_CUSTOM_FIELDS.TICKET_STATUS) {
+              // For enum fields, get the display_value or enum_value.name
+              ticketStatus = field.display_value || field.enum_value?.name;
+              console.log(
+                '  Found Ticket Status in custom field:',
+                ticketStatus
+              );
             }
           }
 
@@ -1650,11 +1877,13 @@ app.post('/asana-webhook-prod', async (req, res) => {
             continue;
           }
 
-          // Update Intercom ticket state ID based on completion status
-          console.log(
-            `  → Updating ticket_state_id (completed: ${isCompleted})`
-          );
-          await updateTicketStateId(ticketId, isCompleted);
+          // Update Intercom ticket's Ticket Status if it changed
+          if (ticketStatus) {
+            console.log(`  → Updating Ticket Status to: "${ticketStatus}"`);
+            await updateTicketStatus(ticketId, ticketStatus);
+          } else {
+            console.log('  ℹ No Ticket Status change detected');
+          }
         } else {
           console.error('  ✗ Failed to fetch task details');
         }
