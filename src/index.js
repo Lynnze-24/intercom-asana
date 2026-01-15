@@ -2457,27 +2457,6 @@ app.post('/asana-webhook-prod', async (req, res) => {
                 console.log('  ⚠ Ticket Status field exists but has no value');
               }
             }
-            // Handle Ticket Date field (Asana date format) - match by GID or name
-            if (
-              field.gid === ASANA_CUSTOM_FIELDS.TICKET_DATE ||
-              field.name === 'Ticket Date'
-            ) {
-              console.log(
-                '  Ticket Date field found:',
-                JSON.stringify(field, null, 2)
-              );
-
-              // Asana date fields use date_value object with date or date_time
-              if (field.date_value) {
-                ticketDate = field.date_value;
-                console.log(
-                  '  ✓ Found Ticket Date in custom field:',
-                  field.date_value.date || field.date_value.date_time
-                );
-              } else {
-                console.log('  ⚠ Ticket Date field exists but has no value');
-              }
-            }
           }
 
           // Log all custom field GIDs for debugging
@@ -2558,21 +2537,6 @@ app.post('/asana-webhook-prod', async (req, res) => {
 
           // Update Intercom ticket's Ticket Status if it changed
           if (ticketStatus) {
-            console.log(`  → Updating Ticket Status to: "${ticketStatus}"`);
-            const updateResult = await updateTicketStatus(
-              ticketId,
-              ticketStatus
-            );
-            if (updateResult) {
-              console.log('  ✓ Successfully updated Intercom ticket status');
-            } else {
-              console.log('  ✗ Failed to update Intercom ticket status');
-            }
-
-            // Also update the ticket state ID based on the status
-            console.log(
-              `  → Updating ticket state ID based on: "${ticketStatus}"`
-            );
             const stateUpdateResult = await updateTicketStateId(
               ticketId,
               ticketStatus
@@ -2589,30 +2553,6 @@ app.post('/asana-webhook-prod', async (req, res) => {
             console.log(
               '  Expected custom field GID:',
               ASANA_CUSTOM_FIELDS.TICKET_STATUS
-            );
-          }
-
-          // Update Intercom ticket's Due Date from Asana's Ticket Date
-          if (ticketDate) {
-            console.log(
-              `  → Updating Due Date from Asana Ticket Date: "${
-                ticketDate.date || ticketDate.date_time
-              }"`
-            );
-            const dateUpdateResult = await updateTicketDueDate(
-              ticketId,
-              ticketDate
-            );
-            if (dateUpdateResult) {
-              console.log('  ✓ Successfully updated Intercom Due Date');
-            } else {
-              console.log('  ✗ Failed to update Intercom Due Date');
-            }
-          } else {
-            console.log('  ℹ No Ticket Date value to sync');
-            console.log(
-              '  Expected custom field GID:',
-              ASANA_CUSTOM_FIELDS.TICKET_DATE
             );
           }
         } else {
