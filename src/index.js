@@ -23,7 +23,8 @@ const ASANA_CUSTOM_FIELDS = {
   AGENT_REMARK: null,
   INTERCOM_CONVERSATION_ID: null, // For webhook sync back to Intercom
   TICKET_STATUS: null, // For syncing ticket status between Asana and Intercom
-  TICKET_DUE_DATE: null, // For syncing due date between Asana and Intercom
+  TICKET_DUE_DATE: null, // For syncing due date between Asana and Intercom (text format)
+  TICKET_DATE: null, // For syncing due date between Asana and Intercom (date format)
 };
 
 // Cache for custom field mappings and types
@@ -510,6 +511,116 @@ async function updateTicketStateId(ticketId, labelOrCategory) {
   }
 }
 
+// Helper function to update Intercom ticket Due Date from Asana Ticket Date
+async function updateTicketDueDate(ticketId, asanaDateValue) {
+  try {
+    if (!asanaDateValue) {
+      console.log('  ℹ No date value provided, skipping Due Date update');
+      return false;
+    }
+
+    // Asana date fields return date in YYYY-MM-DD format or with date_time in ISO format
+    // We need to convert to Unix timestamp for Intercom
+    let dateString = null;
+
+    // Handle Asana date_value object (date field)
+    if (typeof asanaDateValue === 'object') {
+      // Prefer date_time if available (includes time), otherwise use date
+      dateString = asanaDateValue.date_time || asanaDateValue.date;
+    } else if (typeof asanaDateValue === 'string') {
+      dateString = asanaDateValue;
+    }
+
+    if (!dateString) {
+      console.log('  ⚠ Could not extract date from Asana date value');
+      return false;
+    }
+
+    // Convert to Unix timestamp (seconds)
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) {
+      console.error(`  ✗ Invalid date: "${dateString}"`);
+      return false;
+    }
+
+    const unixTimestamp = Math.floor(date.getTime() / 1000);
+    console.log(
+      `  Updating ticket ${ticketId} Due Date to: "${dateString}" (Unix: ${unixTimestamp})`
+    );
+
+    const response = await fetch(
+      `https://api.intercom.io/tickets/${ticketId}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${INTERCOM_TOKEN}`,
+          'Intercom-Version': '2.14',
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          ticket_attributes: {
+            'Due Date': unixTimestamp,
+          },
+        }),
+      }
+    );
+
+    if (response.ok) {
+      console.log(`  ✓ Successfully updated Due Date to "${dateString}"`);
+      return true;
+    } else {
+      const errorData = await response.json();
+      console.error('  ✗ Error updating Due Date:', errorData);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error updating ticket Due Date:', error);
+    return false;
+  }
+}
+
+// Helper function to format date for Asana date field (YYYY-MM-DD)
+function formatDateForAsanaDateField(dateValue) {
+  if (!dateValue) return null;
+
+  try {
+    let date;
+
+    // Handle Unix timestamp (number or string number)
+    if (typeof dateValue === 'number' || !isNaN(Number(dateValue))) {
+      date = new Date(Number(dateValue) * 1000); // Convert seconds to milliseconds
+    }
+    // Handle ISO string or other date formats
+    else if (typeof dateValue === 'string') {
+      date = new Date(dateValue);
+    }
+    // Handle Date object
+    else if (dateValue instanceof Date) {
+      date = dateValue;
+    } else {
+      console.warn('Unknown date format:', dateValue);
+      return null;
+    }
+
+    // Validate the date
+    if (isNaN(date.getTime())) {
+      console.warn('Invalid date value:', dateValue);
+      return null;
+    }
+
+    // Format as YYYY-MM-DD for Asana date field
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+
+    return `${year}-${month}-${day}`;
+  } catch (error) {
+    console.error('Error formatting date for Asana:', error);
+    return null;
+  }
+}
+
 // Helper function to get enum option ID from custom field
 async function getAsanaEnumOptionId(fieldGid, optionName) {
   try {
@@ -631,6 +742,7 @@ async function initializeCustomFieldMappings() {
       'Intercom Conversation ID': 'INTERCOM_CONVERSATION_ID',
       'Ticket Status': 'TICKET_STATUS',
       'Ticket Due Date': 'TICKET_DUE_DATE',
+      'Ticket Date': 'TICKET_DATE', // Date format field for due date sync
     };
 
     // Map custom field names to their GIDs and types
@@ -1664,6 +1776,41 @@ Contact Information:
         );
       }
 
+      // Add Ticket Date field (date format) - sync Due Date from Intercom
+      if (ASANA_CUSTOM_FIELDS.TICKET_DATE && dueDate) {
+        const fieldType = customFieldTypes['TICKET_DATE'];
+
+        if (fieldType === 'date') {
+          // Format date as YYYY-MM-DD for Asana date field
+          const formattedDate = formatDateForAsanaDateField(dueDate);
+          if (formattedDate) {
+            // Asana date fields require an object with 'date' property
+            customFields[ASANA_CUSTOM_FIELDS.TICKET_DATE] = {
+              date: formattedDate,
+            };
+            console.log(
+              '✓ Adding Ticket Date to Asana custom field (date format):',
+              formattedDate,
+              '(original:',
+              dueDate,
+              ')'
+            );
+          } else {
+            console.warn(
+              'Could not format Due Date for Asana Ticket Date field:',
+              dueDate
+            );
+          }
+        } else {
+          console.warn(
+            `⚠️ Ticket Date field type is "${fieldType}", expected "date"`
+          );
+          console.warn(
+            'Please ensure "Ticket Date" field in Asana is set to date type.'
+          );
+        }
+      }
+
       console.log('Custom fields to sync:', Object.keys(customFields).length);
       if (Object.keys(customFields).length > 0) {
         console.log(
@@ -2244,19 +2391,43 @@ app.post('/asana-webhook-prod', async (req, res) => {
 
           console.log(`  Found ${customFields.length} custom fields on task`);
 
-          // Get conversation ID and Ticket Status from custom fields
+          // Get conversation ID, Ticket Status, and Ticket Date from custom fields
           let conversationId = null;
           let ticketStatus = null;
+          let ticketDate = null;
 
           for (const field of customFields) {
-            if (field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID) {
-              conversationId = field.text_value || field.display_value;
+            // Match by GID or by field name (fallback if GID not mapped)
+            if (
+              field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID ||
+              field.name === 'Intercom Conversation ID'
+            ) {
+              // Try multiple properties where the value might be stored
+              conversationId =
+                field.text_value ||
+                field.display_value ||
+                field.number_value ||
+                (typeof field.value === 'string' ? field.value : null);
+
               console.log(
-                '  Found conversation ID in custom field:',
-                conversationId
+                '  ✓ Found Intercom Conversation ID field:',
+                JSON.stringify(field, null, 2)
+              );
+              console.log(
+                '  → Extracted conversation ID:',
+                conversationId,
+                `(matched by ${
+                  field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID
+                    ? 'GID'
+                    : 'name'
+                })`
               );
             }
-            if (field.gid === ASANA_CUSTOM_FIELDS.TICKET_STATUS) {
+            // Match Ticket Status by GID or name
+            if (
+              field.gid === ASANA_CUSTOM_FIELDS.TICKET_STATUS ||
+              field.name === 'Ticket Status'
+            ) {
               console.log(
                 '  Ticket Status field found:',
                 JSON.stringify(field, null, 2)
@@ -2286,6 +2457,27 @@ app.post('/asana-webhook-prod', async (req, res) => {
                 console.log('  ⚠ Ticket Status field exists but has no value');
               }
             }
+            // Handle Ticket Date field (Asana date format) - match by GID or name
+            if (
+              field.gid === ASANA_CUSTOM_FIELDS.TICKET_DATE ||
+              field.name === 'Ticket Date'
+            ) {
+              console.log(
+                '  Ticket Date field found:',
+                JSON.stringify(field, null, 2)
+              );
+
+              // Asana date fields use date_value object with date or date_time
+              if (field.date_value) {
+                ticketDate = field.date_value;
+                console.log(
+                  '  ✓ Found Ticket Date in custom field:',
+                  field.date_value.date || field.date_value.date_time
+                );
+              } else {
+                console.log('  ⚠ Ticket Date field exists but has no value');
+              }
+            }
           }
 
           // Log all custom field GIDs for debugging
@@ -2298,16 +2490,25 @@ app.post('/asana-webhook-prod', async (req, res) => {
             '  Expected Ticket Status field GID:',
             ASANA_CUSTOM_FIELDS.TICKET_STATUS || '(NOT CONFIGURED)'
           );
+          console.log(
+            '  Expected Ticket Date field GID:',
+            ASANA_CUSTOM_FIELDS.TICKET_DATE || '(NOT CONFIGURED)'
+          );
 
           if (customFields.length > 0) {
             console.log('  All custom field GIDs on task:');
             customFields.forEach((f) => {
-              const value =
+              let value =
                 f.enum_value?.name ||
                 f.display_value ||
                 f.text_value ||
                 f.number_value ||
                 '(no value)';
+              // Handle date fields
+              if (f.date_value) {
+                value =
+                  f.date_value.date || f.date_value.date_time || '(no date)';
+              }
               console.log(`    - ${f.name} (${f.gid}): ${value}`);
             });
           } else {
@@ -2329,25 +2530,15 @@ app.post('/asana-webhook-prod', async (req, res) => {
           if (!conversationId) {
             console.log('  ✗ No conversation ID found for this task');
             console.log('  Possible causes:');
-            if (!ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID) {
-              console.log(
-                '    1. ⚠ "Intercom Conversation ID" custom field is NOT configured in Asana project'
-              );
-              console.log(
-                '       → Please add a TEXT custom field named "Intercom Conversation ID" to your Asana project'
-              );
-            } else {
-              console.log(
-                '    1. ✓ Custom field is configured (GID:',
-                ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID + ')'
-              );
-              console.log(
-                '    2. ⚠ This task was created before the field was added, OR'
-              );
-              console.log(
-                '    3. ⚠ The task was not created through the Intercom integration'
-              );
-            }
+            console.log(
+              '    1. ⚠ The "Intercom Conversation ID" field has no value on this task'
+            );
+            console.log(
+              '    2. ⚠ This task was created before the field was added, OR'
+            );
+            console.log(
+              '    3. ⚠ The task was not created through the Intercom integration'
+            );
             console.log('  Skipping webhook update');
             continue;
           }
@@ -2398,6 +2589,30 @@ app.post('/asana-webhook-prod', async (req, res) => {
             console.log(
               '  Expected custom field GID:',
               ASANA_CUSTOM_FIELDS.TICKET_STATUS
+            );
+          }
+
+          // Update Intercom ticket's Due Date from Asana's Ticket Date
+          if (ticketDate) {
+            console.log(
+              `  → Updating Due Date from Asana Ticket Date: "${
+                ticketDate.date || ticketDate.date_time
+              }"`
+            );
+            const dateUpdateResult = await updateTicketDueDate(
+              ticketId,
+              ticketDate
+            );
+            if (dateUpdateResult) {
+              console.log('  ✓ Successfully updated Intercom Due Date');
+            } else {
+              console.log('  ✗ Failed to update Intercom Due Date');
+            }
+          } else {
+            console.log('  ℹ No Ticket Date value to sync');
+            console.log(
+              '  Expected custom field GID:',
+              ASANA_CUSTOM_FIELDS.TICKET_DATE
             );
           }
         } else {
