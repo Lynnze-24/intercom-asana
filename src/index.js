@@ -1098,8 +1098,9 @@ app.get('/webhook-info', (req, res) => {
       intercom: {
         step1: 'Go to Intercom Developer Hub → Webhooks',
         step2: `Add webhook URL: ${intercomWebhookUrl}`,
-        step3: 'Subscribe to topic: conversation.admin.noted',
+        step3: 'Subscribe to topic: ticket.note.created',
         step4: 'Save the webhook configuration',
+        note: 'This will sync admin notes from Intercom to Asana as comments',
       },
     },
     curl_example: `curl -X POST https://app.asana.com/api/1.0/webhooks \\
@@ -1130,8 +1131,80 @@ app.post('/intercom-webhook', async (req, res) => {
 
     console.log('Event topic:', topic);
 
-    // Handle conversation.admin.noted event
-    if (topic === 'conversation.admin.noted') {
+    // Handle ticket.note.created event
+    if (topic === 'ticket.note.created') {
+      console.log('  Processing ticket note created event');
+
+      const ticket = data?.ticket;
+      const ticketPart = data?.ticket_part;
+
+      if (!ticket || !ticketPart) {
+        console.log('  ⚠ Missing ticket or ticket_part in webhook data');
+        return res.status(200).send();
+      }
+
+      // Get Asana task ID directly from ticket attributes
+      const asanaTaskId = ticket?.ticket_attributes?.AsanaTaskID;
+
+      if (!asanaTaskId) {
+        console.log('  ⚠ No Asana task ID found for this ticket');
+        console.log('  Skipping note sync - ticket not linked to Asana');
+        return res.status(200).send();
+      }
+
+      console.log('  Ticket ID:', ticket.id);
+      console.log('  Asana Task ID:', asanaTaskId);
+
+      // Get note details from ticket_part
+      const noteBody = ticketPart.body;
+      const noteAuthor = ticketPart.author?.name || 'Admin';
+
+      if (!noteBody) {
+        console.log('  ⚠ No note body found');
+        return res.status(200).send();
+      }
+
+      console.log('  Note author:', noteAuthor);
+      console.log('  Note body:', noteBody);
+
+      // Strip HTML tags from note body (simple regex - could be improved)
+      const plainTextBody = noteBody
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .trim();
+
+      // Format note for Asana comment
+      const commentBody = `[Intercom Note by ${noteAuthor}]\n${plainTextBody}`;
+
+      // Post comment to Asana task
+      const asanaResponse = await fetch(
+        `https://app.asana.com/api/1.0/tasks/${asanaTaskId}/stories`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${ASANA_TOKEN}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            data: {
+              text: commentBody,
+            },
+          }),
+        }
+      );
+
+      if (asanaResponse.ok) {
+        const asanaData = await asanaResponse.json();
+        console.log('  ✓ Note posted to Asana task as comment');
+        console.log('  Asana story ID:', asanaData.data.gid);
+      } else {
+        const errorData = await asanaResponse.json();
+        console.error('  ✗ Failed to post note to Asana:', errorData);
+      }
+    }
+    // Handle conversation.admin.noted event (legacy support)
+    else if (topic === 'conversation.admin.noted') {
       console.log('  Processing admin note event');
 
       const conversationId = data?.id;
@@ -1192,10 +1265,16 @@ app.post('/intercom-webhook', async (req, res) => {
       console.log('  Note author:', latestNote.author?.name || 'Unknown');
       console.log('  Note body:', latestNote.body);
 
+      // Strip HTML tags
+      const plainTextBody = latestNote.body
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .trim();
+
       // Format note for Asana comment
       const commentBody = `[Intercom Note by ${
         latestNote.author?.name || 'Admin'
-      }]\n${latestNote.body}`;
+      }]\n${plainTextBody}`;
 
       // Post comment to Asana task
       const asanaResponse = await fetch(
