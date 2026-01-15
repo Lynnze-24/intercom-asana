@@ -680,6 +680,21 @@ async function initializeCustomFieldMappings() {
       console.warn(
         'Please create these fields in your Asana project for full syncing.'
       );
+
+      // Special warning for critical field
+      if (missingFields.includes('Intercom Conversation ID')) {
+        console.warn('\n⚠⚠⚠ CRITICAL WARNING ⚠⚠⚠');
+        console.warn(
+          'The "Intercom Conversation ID" field is REQUIRED for webhook sync!'
+        );
+        console.warn(
+          'Without this field, Asana webhooks cannot update Intercom tickets.'
+        );
+        console.warn(
+          'Please create a TEXT field named "Intercom Conversation ID" in your Asana project.'
+        );
+        console.warn('⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠\n');
+      }
     } else {
       console.log('✓ All custom fields mapped successfully');
     }
@@ -1637,8 +1652,15 @@ Contact Information:
         customFields[ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID] =
           String(conversationId);
         console.log(
-          'Adding conversation ID to Asana custom field:',
+          '✓ Adding conversation ID to Asana custom field:',
           conversationId
+        );
+      } else if (!ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID) {
+        console.warn(
+          '⚠ WARNING: "Intercom Conversation ID" custom field NOT configured!'
+        );
+        console.warn(
+          '   Webhook sync will not work without this field. Please add it to your Asana project.'
         );
       }
 
@@ -2267,6 +2289,16 @@ app.post('/asana-webhook-prod', async (req, res) => {
           }
 
           // Log all custom field GIDs for debugging
+          console.log('\n  === DEBUGGING CUSTOM FIELDS ===');
+          console.log(
+            '  Expected Intercom Conversation ID field GID:',
+            ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID || '(NOT CONFIGURED)'
+          );
+          console.log(
+            '  Expected Ticket Status field GID:',
+            ASANA_CUSTOM_FIELDS.TICKET_STATUS || '(NOT CONFIGURED)'
+          );
+
           if (customFields.length > 0) {
             console.log('  All custom field GIDs on task:');
             customFields.forEach((f) => {
@@ -2278,21 +2310,44 @@ app.post('/asana-webhook-prod', async (req, res) => {
                 '(no value)';
               console.log(`    - ${f.name} (${f.gid}): ${value}`);
             });
+          } else {
+            console.log('  ⚠ WARNING: No custom fields found on this task!');
           }
+          console.log('  ===============================\n');
 
           // Fallback to in-memory map if custom field not found
           if (!conversationId) {
             conversationId = asanaTaskToConversation.get(taskId);
             if (conversationId) {
               console.log(
-                '  Found conversation ID in memory map:',
+                '  ✓ Found conversation ID in memory map:',
                 conversationId
               );
             }
           }
 
           if (!conversationId) {
-            console.log('  ⚠ No conversation ID found for this task');
+            console.log('  ✗ No conversation ID found for this task');
+            console.log('  Possible causes:');
+            if (!ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID) {
+              console.log(
+                '    1. ⚠ "Intercom Conversation ID" custom field is NOT configured in Asana project'
+              );
+              console.log(
+                '       → Please add a TEXT custom field named "Intercom Conversation ID" to your Asana project'
+              );
+            } else {
+              console.log(
+                '    1. ✓ Custom field is configured (GID:',
+                ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID + ')'
+              );
+              console.log(
+                '    2. ⚠ This task was created before the field was added, OR'
+              );
+              console.log(
+                '    3. ⚠ The task was not created through the Intercom integration'
+              );
+            }
             console.log('  Skipping webhook update');
             continue;
           }
