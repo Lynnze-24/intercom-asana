@@ -34,6 +34,64 @@ let customFieldTypes = {};
 const INTERCOM_TOKEN =
   'dG9rOmQxMmIxYTQxXzcwMDhfNGE2Ml9iODU1XzQ5MjFkNjA4NWRlZDoxOjA=';
 
+// Intercom ticket state mappings
+const INTERCOM_TICKET_STATES = [
+  {
+    type: 'ticket_state',
+    id: '3480792',
+    category: 'submitted',
+    internal_label: 'Submitted',
+    external_label: 'Submitted',
+  },
+  {
+    type: 'ticket_state',
+    id: '3480793',
+    category: 'in_progress',
+    internal_label: 'In progress',
+    external_label: 'In progress',
+  },
+  {
+    type: 'ticket_state',
+    id: '3480794',
+    category: 'waiting_on_customer',
+    internal_label: 'Waiting on customer',
+    external_label: 'Waiting on you',
+  },
+  {
+    type: 'ticket_state',
+    id: '3480795',
+    category: 'resolved',
+    internal_label: 'Resolved',
+    external_label: 'Resolved',
+  },
+];
+
+// Helper function to get ticket state ID by label or category
+function getTicketStateId(labelOrCategory) {
+  const normalizedInput = labelOrCategory.toLowerCase().trim();
+
+  // Try to find by internal label
+  let state = INTERCOM_TICKET_STATES.find(
+    (s) => s.internal_label.toLowerCase() === normalizedInput
+  );
+
+  // Try to find by external label
+  if (!state) {
+    state = INTERCOM_TICKET_STATES.find(
+      (s) => s.external_label.toLowerCase() === normalizedInput
+    );
+  }
+
+  // Try to find by category
+  if (!state) {
+    state = INTERCOM_TICKET_STATES.find(
+      (s) => s.category.toLowerCase() === normalizedInput
+    );
+  }
+
+  return state ? state.id : null;
+}
+
 // Asana webhook secret (will be set during webhook handshake)
 let asanaWebhookSecret = null;
 
@@ -400,12 +458,24 @@ async function updateTicketAsanaStatus(ticketId, status) {
   }
 }
 
-// Helper function to update Intercom ticket state ID based on Asana completion status
-async function updateTicketStateId(ticketId, isCompleted) {
+// Helper function to update Intercom ticket state ID based on label or category
+async function updateTicketStateId(ticketId, labelOrCategory) {
   try {
-    const stateId = isCompleted ? '3480795' : '3480792';
+    const stateId = getTicketStateId(labelOrCategory);
+
+    if (!stateId) {
+      console.error(
+        `✗ Could not find ticket state ID for: "${labelOrCategory}"`
+      );
+      console.error(
+        'Available states:',
+        INTERCOM_TICKET_STATES.map((s) => s.internal_label).join(', ')
+      );
+      return false;
+    }
+
     console.log(
-      `Updating ticket ${ticketId} ticket_state_id to: "${stateId}" (completed: ${isCompleted})`
+      `Updating ticket ${ticketId} ticket_state_id to: "${stateId}" (${labelOrCategory})`
     );
 
     const response = await fetch(
@@ -425,7 +495,9 @@ async function updateTicketStateId(ticketId, isCompleted) {
     );
 
     if (response.ok) {
-      console.log(`✓ Successfully updated ticket_state_id to "${stateId}"`);
+      console.log(
+        `✓ Successfully updated ticket_state_id to "${stateId}" (${labelOrCategory})`
+      );
       return true;
     } else {
       const errorData = await response.json();
@@ -995,13 +1067,13 @@ app.post('/initialize', async (req, res) => {
           {
             type: 'input',
             id: 'comment_input',
-            label: '✏️ Add a comment',
+            label: 'Add a comment',
             placeholder: 'Type your comment here...',
             value: '',
           },
           {
             type: 'button',
-            label: '📤 Send Comment',
+            label: 'Send Comment 💬',
             style: 'primary',
             id: 'send_comment_button',
             action: {
@@ -1342,13 +1414,13 @@ app.post('/submit', async (req, res) => {
             {
               type: 'input',
               id: 'comment_input',
-              label: '✏️ Add a comment',
+              label: 'Add a comment',
               placeholder: 'Type your comment here...',
               value: '',
             },
             {
               type: 'button',
-              label: '📤 Send Comment',
+              label: 'Send Comment 💬',
               style: 'primary',
               id: 'send_comment_button',
               action: {
@@ -1890,13 +1962,13 @@ Contact Information:
           {
             type: 'input',
             id: 'comment_input',
-            label: '✏️ Add a comment',
+            label: 'Add a comment',
             placeholder: 'Type your comment here...',
             value: '',
           },
           {
             type: 'button',
-            label: '📤 Send Comment',
+            label: 'Send Comment 💬',
             style: 'primary',
             id: 'send_comment_button',
             action: {
@@ -2249,6 +2321,22 @@ app.post('/asana-webhook-prod', async (req, res) => {
               console.log('  ✓ Successfully updated Intercom ticket status');
             } else {
               console.log('  ✗ Failed to update Intercom ticket status');
+            }
+
+            // Also update the ticket state ID based on the status
+            console.log(
+              `  → Updating ticket state ID based on: "${ticketStatus}"`
+            );
+            const stateUpdateResult = await updateTicketStateId(
+              ticketId,
+              ticketStatus
+            );
+            if (stateUpdateResult) {
+              console.log('  ✓ Successfully updated Intercom ticket state ID');
+            } else {
+              console.log(
+                "  ℹ Could not match ticket status to a state ID (this is normal if status doesn't match state labels)"
+              );
             }
           } else {
             console.log('  ℹ No Ticket Status value to sync');
