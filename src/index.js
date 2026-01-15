@@ -34,6 +34,7 @@ let customFieldTypes = {};
 // Intercom configuration
 const INTERCOM_TOKEN =
   'dG9rOmQxMmIxYTQxXzcwMDhfNGE2Ml9iODU1XzQ5MjFkNjA4NWRlZDoxOjA=';
+const INTERCOM_ADMIN_ID = '8678718'; // Admin ID for posting notes
 
 // Intercom ticket state mappings
 const INTERCOM_TICKET_STATES = [
@@ -2389,6 +2390,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
                   body: JSON.stringify({
                     message_type: 'note',
                     type: 'admin',
+                    admin_id: INTERCOM_ADMIN_ID,
                     body: commentBody,
                   }),
                 }
