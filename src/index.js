@@ -350,6 +350,98 @@ async function addAsanaTaskComment(taskId, commentText) {
   }
 }
 
+// Helper function to get conversation ID from Asana task
+async function getConversationIdFromTask(taskId) {
+  try {
+    console.log('  Fetching task details from Asana...');
+    const taskResponse = await fetch(
+      `https://app.asana.com/api/1.0/tasks/${taskId}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${ASANA_TOKEN}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (!taskResponse.ok) {
+      const errorText = await taskResponse.text();
+      console.error(
+        '  ✗ Failed to fetch task details. Status:',
+        taskResponse.status
+      );
+      console.error('  Error response:', errorText);
+      return null;
+    }
+
+    const taskData = await taskResponse.json();
+    const customFields = taskData.data.custom_fields || [];
+
+    console.log(`  Found ${customFields.length} custom fields on task`);
+
+    // Get conversation ID from custom fields
+    let conversationId = null;
+
+    for (const field of customFields) {
+      // Match by GID or by field name (fallback if GID not mapped)
+      if (
+        field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID ||
+        field.name === 'Intercom Conversation ID'
+      ) {
+        // Try multiple properties where the value might be stored
+        conversationId =
+          field.text_value ||
+          field.display_value ||
+          field.number_value ||
+          (typeof field.value === 'string' ? field.value : null);
+
+        console.log(
+          '  ✓ Found Intercom Conversation ID field:',
+          JSON.stringify(field, null, 2)
+        );
+        console.log(
+          '  → Extracted conversation ID:',
+          conversationId,
+          `(matched by ${
+            field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID
+              ? 'GID'
+              : 'name'
+          })`
+        );
+        break;
+      }
+    }
+
+    // Fallback to in-memory map if custom field not found
+    if (!conversationId) {
+      conversationId = asanaTaskToConversation.get(taskId);
+      if (conversationId) {
+        console.log('  ✓ Found conversation ID in memory map:', conversationId);
+      }
+    }
+
+    if (!conversationId) {
+      console.log('  ✗ No conversation ID found for this task');
+      console.log('  Possible causes:');
+      console.log(
+        '    1. ⚠ The "Intercom Conversation ID" field has no value on this task'
+      );
+      console.log(
+        '    2. ⚠ This task was created before the field was added, OR'
+      );
+      console.log(
+        '    3. ⚠ The task was not created through the Intercom integration'
+      );
+    }
+
+    return { conversationId, taskData: taskData.data };
+  } catch (error) {
+    console.error('  ✗ Error fetching conversation ID from task:', error);
+    return null;
+  }
+}
+
 // Helper function to update Intercom ticket attributes
 async function updateTicketAttribute(ticketId, asanaTaskId) {
   try {
@@ -2273,74 +2365,50 @@ app.post('/asana-webhook-prod', async (req, res) => {
             console.log('  Comment text:', story.text);
             console.log('  Created by:', story.created_by?.name);
 
-            // Get conversation ID from task
-            const taskResponse = await fetch(
-              `https://app.asana.com/api/1.0/tasks/${taskId}`,
-              {
-                method: 'GET',
-                headers: {
-                  Authorization: `Bearer ${ASANA_TOKEN}`,
-                  Accept: 'application/json',
-                },
-              }
-            );
+            // Get conversation ID from task (using shared helper)
+            const result = await getConversationIdFromTask(taskId);
 
-            if (taskResponse.ok) {
-              const taskData = await taskResponse.json();
-              const customFields = taskData.data.custom_fields || [];
+            if (result && result.conversationId) {
+              const conversationId = result.conversationId;
+              console.log('  Found conversation ID:', conversationId);
 
-              let conversationId = null;
-              for (const field of customFields) {
-                if (
-                  field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID
-                ) {
-                  conversationId = field.text_value || field.display_value;
-                  break;
+              // Post comment to Intercom conversation as a private note
+              const commentBody = `[Asana Comment by ${
+                story.created_by?.name || 'Unknown'
+              }]\n${story.text}`;
+
+              const intercomResponse = await fetch(
+                `https://api.intercom.io/conversations/${conversationId}/reply`,
+                {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${INTERCOM_TOKEN}`,
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                  },
+                  body: JSON.stringify({
+                    message_type: 'note',
+                    type: 'admin',
+                    body: commentBody,
+                  }),
                 }
-              }
+              );
 
-              // Fallback to in-memory map
-              if (!conversationId) {
-                conversationId = asanaTaskToConversation.get(taskId);
-              }
-
-              if (conversationId) {
-                console.log('  Found conversation ID:', conversationId);
-
-                // Post comment to Intercom conversation
-                const commentBody = `[Asana Comment by ${
-                  story.created_by?.name || 'Unknown'
-                }]\n${story.text}`;
-
-                const intercomResponse = await fetch(
-                  `https://api.intercom.io/conversations/${conversationId}/reply`,
-                  {
-                    method: 'POST',
-                    headers: {
-                      Authorization: `Bearer ${INTERCOM_TOKEN}`,
-                      'Content-Type': 'application/json',
-                      Accept: 'application/json',
-                    },
-                    body: JSON.stringify({
-                      message_type: 'note',
-                      type: 'admin',
-                      body: commentBody,
-                    }),
-                  }
+              if (intercomResponse.ok) {
+                console.log(
+                  '  ✓ Comment posted to Intercom conversation as private note'
                 );
-
-                if (intercomResponse.ok) {
-                  console.log('  ✓ Comment posted to Intercom conversation');
-                } else {
-                  const errorData = await intercomResponse.json();
-                  console.error(
-                    '  ✗ Failed to post comment to Intercom:',
-                    errorData
-                  );
-                }
               } else {
-                console.log('  ⚠ No conversation ID found for this task');
+                const errorData = await intercomResponse.json();
+                console.error(
+                  '  ✗ Failed to post comment to Intercom:',
+                  errorData
+                );
               }
+            } else {
+              console.log(
+                '  ⚠ Skipping comment sync - no conversation ID found'
+              );
             }
           }
         }
@@ -2372,196 +2440,121 @@ app.post('/asana-webhook-prod', async (req, res) => {
           isTicketStatusChange = true;
         }
 
-        // Fetch the task to get custom fields including Ticket Status
-        console.log('  Fetching task details from Asana...');
-        const taskResponse = await fetch(
-          `https://app.asana.com/api/1.0/tasks/${taskId}`,
-          {
-            method: 'GET',
-            headers: {
-              Authorization: `Bearer ${ASANA_TOKEN}`,
-              Accept: 'application/json',
-            },
+        // Get conversation ID from task (using shared helper)
+        const result = await getConversationIdFromTask(taskId);
+
+        if (!result || !result.conversationId) {
+          console.log('  Skipping webhook update');
+          continue;
+        }
+
+        const conversationId = result.conversationId;
+        const taskData = result.taskData;
+        const customFields = taskData.custom_fields || [];
+
+        // Extract Ticket Status from custom fields
+        let ticketStatus = null;
+
+        for (const field of customFields) {
+          // Match Ticket Status by GID or name
+          if (
+            field.gid === ASANA_CUSTOM_FIELDS.TICKET_STATUS ||
+            field.name === 'Ticket Status'
+          ) {
+            console.log(
+              '  Ticket Status field found:',
+              JSON.stringify(field, null, 2)
+            );
+
+            // For enum fields, get the value properly
+            if (field.enum_value) {
+              ticketStatus = field.enum_value.name;
+              console.log(
+                '  Ticket Status from enum_value.name:',
+                ticketStatus
+              );
+            } else if (field.display_value) {
+              ticketStatus = field.display_value;
+              console.log('  Ticket Status from display_value:', ticketStatus);
+            }
+
+            if (ticketStatus) {
+              console.log(
+                '  ✓ Found Ticket Status in custom field:',
+                ticketStatus
+              );
+            } else {
+              console.log('  ⚠ Ticket Status field exists but has no value');
+            }
+            break;
           }
+        }
+
+        // Log all custom field GIDs for debugging
+        console.log('\n  === DEBUGGING CUSTOM FIELDS ===');
+        console.log(
+          '  Expected Intercom Conversation ID field GID:',
+          ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID || '(NOT CONFIGURED)'
+        );
+        console.log(
+          '  Expected Ticket Status field GID:',
+          ASANA_CUSTOM_FIELDS.TICKET_STATUS || '(NOT CONFIGURED)'
+        );
+        console.log(
+          '  Expected Ticket Date field GID:',
+          ASANA_CUSTOM_FIELDS.TICKET_DATE || '(NOT CONFIGURED)'
         );
 
-        if (taskResponse.ok) {
-          const taskData = await taskResponse.json();
-          const customFields = taskData.data.custom_fields || [];
-
-          console.log(`  Found ${customFields.length} custom fields on task`);
-
-          // Get conversation ID, Ticket Status, and Ticket Date from custom fields
-          let conversationId = null;
-          let ticketStatus = null;
-          let ticketDate = null;
-
-          for (const field of customFields) {
-            // Match by GID or by field name (fallback if GID not mapped)
-            if (
-              field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID ||
-              field.name === 'Intercom Conversation ID'
-            ) {
-              // Try multiple properties where the value might be stored
-              conversationId =
-                field.text_value ||
-                field.display_value ||
-                field.number_value ||
-                (typeof field.value === 'string' ? field.value : null);
-
-              console.log(
-                '  ✓ Found Intercom Conversation ID field:',
-                JSON.stringify(field, null, 2)
-              );
-              console.log(
-                '  → Extracted conversation ID:',
-                conversationId,
-                `(matched by ${
-                  field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID
-                    ? 'GID'
-                    : 'name'
-                })`
-              );
+        if (customFields.length > 0) {
+          console.log('  All custom field GIDs on task:');
+          customFields.forEach((f) => {
+            let value =
+              f.enum_value?.name ||
+              f.display_value ||
+              f.text_value ||
+              f.number_value ||
+              '(no value)';
+            // Handle date fields
+            if (f.date_value) {
+              value =
+                f.date_value.date || f.date_value.date_time || '(no date)';
             }
-            // Match Ticket Status by GID or name
-            if (
-              field.gid === ASANA_CUSTOM_FIELDS.TICKET_STATUS ||
-              field.name === 'Ticket Status'
-            ) {
-              console.log(
-                '  Ticket Status field found:',
-                JSON.stringify(field, null, 2)
-              );
+            console.log(`    - ${f.name} (${f.gid}): ${value}`);
+          });
+        } else {
+          console.log('  ⚠ WARNING: No custom fields found on this task!');
+        }
+        console.log('  ===============================\n');
 
-              // For enum fields, get the value properly
-              if (field.enum_value) {
-                ticketStatus = field.enum_value.name;
-                console.log(
-                  '  Ticket Status from enum_value.name:',
-                  ticketStatus
-                );
-              } else if (field.display_value) {
-                ticketStatus = field.display_value;
-                console.log(
-                  '  Ticket Status from display_value:',
-                  ticketStatus
-                );
-              }
+        // Get conversation to find ticket ID
+        const conversation = await getConversation(conversationId);
+        const ticketId = conversation?.ticket?.id;
 
-              if (ticketStatus) {
-                console.log(
-                  '  ✓ Found Ticket Status in custom field:',
-                  ticketStatus
-                );
-              } else {
-                console.log('  ⚠ Ticket Status field exists but has no value');
-              }
-            }
-          }
+        if (!ticketId) {
+          console.log('  ⚠ No ticket found for conversation:', conversationId);
+          console.log('  Skipping webhook update');
+          continue;
+        }
 
-          // Log all custom field GIDs for debugging
-          console.log('\n  === DEBUGGING CUSTOM FIELDS ===');
-          console.log(
-            '  Expected Intercom Conversation ID field GID:',
-            ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID || '(NOT CONFIGURED)'
+        // Update Intercom ticket's Ticket Status if it changed
+        if (ticketStatus) {
+          const stateUpdateResult = await updateTicketStateId(
+            ticketId,
+            ticketStatus
           );
-          console.log(
-            '  Expected Ticket Status field GID:',
-            ASANA_CUSTOM_FIELDS.TICKET_STATUS || '(NOT CONFIGURED)'
-          );
-          console.log(
-            '  Expected Ticket Date field GID:',
-            ASANA_CUSTOM_FIELDS.TICKET_DATE || '(NOT CONFIGURED)'
-          );
-
-          if (customFields.length > 0) {
-            console.log('  All custom field GIDs on task:');
-            customFields.forEach((f) => {
-              let value =
-                f.enum_value?.name ||
-                f.display_value ||
-                f.text_value ||
-                f.number_value ||
-                '(no value)';
-              // Handle date fields
-              if (f.date_value) {
-                value =
-                  f.date_value.date || f.date_value.date_time || '(no date)';
-              }
-              console.log(`    - ${f.name} (${f.gid}): ${value}`);
-            });
+          if (stateUpdateResult) {
+            console.log('  ✓ Successfully updated Intercom ticket state ID');
           } else {
-            console.log('  ⚠ WARNING: No custom fields found on this task!');
-          }
-          console.log('  ===============================\n');
-
-          // Fallback to in-memory map if custom field not found
-          if (!conversationId) {
-            conversationId = asanaTaskToConversation.get(taskId);
-            if (conversationId) {
-              console.log(
-                '  ✓ Found conversation ID in memory map:',
-                conversationId
-              );
-            }
-          }
-
-          if (!conversationId) {
-            console.log('  ✗ No conversation ID found for this task');
-            console.log('  Possible causes:');
             console.log(
-              '    1. ⚠ The "Intercom Conversation ID" field has no value on this task'
-            );
-            console.log(
-              '    2. ⚠ This task was created before the field was added, OR'
-            );
-            console.log(
-              '    3. ⚠ The task was not created through the Intercom integration'
-            );
-            console.log('  Skipping webhook update');
-            continue;
-          }
-
-          // Get conversation to find ticket ID
-          const conversation = await getConversation(conversationId);
-          const ticketId = conversation?.ticket?.id;
-
-          if (!ticketId) {
-            console.log(
-              '  ⚠ No ticket found for conversation:',
-              conversationId
-            );
-            console.log('  Skipping webhook update');
-            continue;
-          }
-
-          // Update Intercom ticket's Ticket Status if it changed
-          if (ticketStatus) {
-            const stateUpdateResult = await updateTicketStateId(
-              ticketId,
-              ticketStatus
-            );
-            if (stateUpdateResult) {
-              console.log('  ✓ Successfully updated Intercom ticket state ID');
-            } else {
-              console.log(
-                "  ℹ Could not match ticket status to a state ID (this is normal if status doesn't match state labels)"
-              );
-            }
-          } else {
-            console.log('  ℹ No Ticket Status value to sync');
-            console.log(
-              '  Expected custom field GID:',
-              ASANA_CUSTOM_FIELDS.TICKET_STATUS
+              "  ℹ Could not match ticket status to a state ID (this is normal if status doesn't match state labels)"
             );
           }
         } else {
-          const errorText = await taskResponse.text();
-          console.error(
-            '  ✗ Failed to fetch task details. Status:',
-            taskResponse.status
+          console.log('  ℹ No Ticket Status value to sync');
+          console.log(
+            '  Expected custom field GID:',
+            ASANA_CUSTOM_FIELDS.TICKET_STATUS
           );
-          console.error('  Error response:', errorText);
         }
       }
     }
