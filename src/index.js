@@ -1158,9 +1158,18 @@ app.post('/intercom-webhook', async (req, res) => {
       // Get note details from ticket_part
       const noteBody = ticketPart.body;
       const noteAuthor = ticketPart.author?.name || 'Admin';
+      const appPackageCode = ticketPart.app_package_code;
 
       if (!noteBody) {
         console.log('  ⚠ No note body found');
+        return res.status(200).send();
+      }
+
+      // Check if note was created by an integration app (to prevent loop)
+      if (appPackageCode) {
+        console.log(
+          `  ℹ Skipping - note was created by app package: ${appPackageCode} (preventing loop)`
+        );
         return res.status(200).send();
       }
 
@@ -1172,6 +1181,14 @@ app.post('/intercom-webhook', async (req, res) => {
         .replace(/<[^>]*>/g, '')
         .replace(/&nbsp;/g, ' ')
         .trim();
+
+      // Check if this note was created by the integration (to prevent loop)
+      if (plainTextBody.startsWith('[Asana Comment by')) {
+        console.log(
+          '  ℹ Skipping - note was synced from Asana (preventing loop)'
+        );
+        return res.status(200).send();
+      }
 
       // Format note for Asana comment
       const commentBody = `[Intercom Note by ${noteAuthor}]\n${plainTextBody}`;
@@ -1262,6 +1279,14 @@ app.post('/intercom-webhook', async (req, res) => {
         return res.status(200).send();
       }
 
+      // Check if note was created by an integration app (to prevent loop)
+      if (latestNote.app_package_code) {
+        console.log(
+          `  ℹ Skipping - note was created by app package: ${latestNote.app_package_code} (preventing loop)`
+        );
+        return res.status(200).send();
+      }
+
       console.log('  Note author:', latestNote.author?.name || 'Unknown');
       console.log('  Note body:', latestNote.body);
 
@@ -1270,6 +1295,14 @@ app.post('/intercom-webhook', async (req, res) => {
         .replace(/<[^>]*>/g, '')
         .replace(/&nbsp;/g, ' ')
         .trim();
+
+      // Check if this note was created by the integration (to prevent loop)
+      if (plainTextBody.startsWith('[Asana Comment by')) {
+        console.log(
+          '  ℹ Skipping - note was synced from Asana (preventing loop)'
+        );
+        return res.status(200).send();
+      }
 
       // Format note for Asana comment
       const commentBody = `[Intercom Note by ${
@@ -2023,6 +2056,14 @@ app.post('/asana-webhook-prod', async (req, res) => {
           if (story.resource_subtype === 'comment_added' && story.text) {
             console.log('  Comment text:', story.text);
             console.log('  Created by:', story.created_by?.name);
+
+            // Check if this comment was created by the integration (to prevent loop)
+            if (story.text.startsWith('[Intercom Note by')) {
+              console.log(
+                '  ℹ Skipping - comment was synced from Intercom (preventing loop)'
+              );
+              continue;
+            }
 
             // Get conversation ID from task (using shared helper)
             const result = await getConversationIdFromTask(taskId);
