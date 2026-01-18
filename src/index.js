@@ -1490,31 +1490,8 @@ app.post('/submit', async (req, res) => {
       const transactionID = ticketAttrs['Transaction ID'] || '';
       const amount = ticketAttrs.Amount || '';
       const agentRemark = ticketAttrs['Agent Remark'] || '';
+      const ticketStatus = ticketAttrs['Ticket Status'] || '';
       const dueDate = ticketAttrs['Due Date'] || '';
-
-      // Get ticket status from Intercom ticket state (not custom field)
-      // Ticket state contains category like "submitted", "in_progress", etc.
-      const ticketState = ticket?.state;
-      let ticketStatus = '';
-      
-      if (ticketState) {
-        // Find the matching state from our mapping to get the internal label
-        const matchingState = INTERCOM_TICKET_STATES.find(
-          (s) => s.category === ticketState
-        );
-        if (matchingState) {
-          ticketStatus = matchingState.internal_label;
-          console.log(
-            `✓ Found ticket state from Intercom: "${ticketState}" → "${ticketStatus}"`
-          );
-        } else {
-          console.warn(
-            `⚠ Unknown ticket state from Intercom: "${ticketState}"`
-          );
-        }
-      } else {
-        console.log('ℹ No ticket state found in Intercom ticket');
-      }
 
       // Handle attachments from ticket attributes
       // Ticket attachment format: array of objects with url property
@@ -1865,25 +1842,9 @@ Contact Information:
         // Save Asana task ID to Intercom ticket
         await updateTicketAttribute(ticketId, asanaTaskId);
 
-        // Sync Ticket Status to Intercom ticket state at creation time
-        if (ticketStatus) {
-          console.log(
-            `Syncing Ticket Status "${ticketStatus}" to Intercom ticket state at creation...`
-          );
-          const stateUpdateResult = await updateTicketStateId(
-            ticketId,
-            ticketStatus
-          );
-          if (stateUpdateResult) {
-            console.log(
-              '✓ Successfully synced ticket status to Intercom at creation'
-            );
-          } else {
-            console.log(
-              "ℹ Could not match ticket status to a state ID (this is normal if status doesn't match state labels)"
-            );
-          }
-        }
+        // Always set ticket state to "Submitted" for initial creation
+        console.log('Setting ticket state to "Submitted" for initial creation...');
+        await updateTicketStateId(ticketId, 'Submitted');
 
         // Store mapping for webhook callbacks
         asanaTaskToConversation.set(asanaTaskId, conversationId);
