@@ -1411,15 +1411,18 @@ app.post('/submit', async (req, res) => {
   console.log('Request body:', JSON.stringify(req.body, null, 2));
 
   const conversationId = req.body.conversation?.id;
+  const ticketId = req.body.conversation?.ticket?.id;
 
   // Check if this conversation already has an Asana task (only for submit_button)
   if (req.body.component_id === 'submit_button') {
-    if (conversationId) {
-      const conversation = await getConversation(conversationId);
-      const ticketId = conversation?.ticket?.id;
+    if (conversationId && ticketId) {
+      // Fetch both conversation and ticket in parallel
+      const [conversation, ticket] = await Promise.all([
+        getConversation(conversationId),
+        getTicket(ticketId),
+      ]);
 
-      if (ticketId) {
-        const ticket = await getTicket(ticketId);
+      if (ticket) {
         const existingTaskId = ticket?.ticket_attributes?.AsanaTaskID;
 
         if (existingTaskId) {
@@ -1468,16 +1471,14 @@ app.post('/submit', async (req, res) => {
         }
       }
 
-      // Get full conversation details to get ticket ID
-      const fullConversation = await getConversation(conversationId);
-      const ticketId = fullConversation?.ticket?.id;
-
+      // Get ticket ID from request body
       if (!ticketId) {
         throw new Error('No ticket found for this conversation');
       }
 
-      // Get ticket details to access ticket attributes
+      // Fetch ticket details to access ticket attributes
       const ticket = await getTicket(ticketId);
+
       if (!ticket) {
         throw new Error('Failed to fetch ticket details');
       }
@@ -1490,8 +1491,11 @@ app.post('/submit', async (req, res) => {
       const transactionID = ticketAttrs['Transaction ID'] || '';
       const amount = ticketAttrs.Amount || '';
       const agentRemark = ticketAttrs['Agent Remark'] || '';
-      const ticketStatus = ticketAttrs['Ticket Status'] || '';
+      // Always default to "Submitted" if no status exists in Intercom ticket
+      const ticketStatus = ticketAttrs['Ticket Status'] || 'Submitted';
       const dueDate = ticketAttrs['Due Date'] || '';
+
+      console.log('Ticket Status from Intercom:', ticketStatus);
 
       // Handle attachments from ticket attributes
       // Ticket attachment format: array of objects with url property
@@ -1625,10 +1629,12 @@ Contact Information:
         }
       }
       // Add Ticket Status for webhook sync (enum field requires option ID)
+      // Always populate Ticket Status - defaults to "Submitted" if not in Intercom
       if (ASANA_CUSTOM_FIELDS.TICKET_STATUS && ticketStatus) {
         console.log(
           'Looking up enum option ID for Ticket Status:',
-          ticketStatus
+          ticketStatus,
+          ticketStatus === 'Submitted' ? '(default)' : '(from Intercom)'
         );
         const enumOptionId = await getAsanaEnumOptionId(
           ASANA_CUSTOM_FIELDS.TICKET_STATUS,
@@ -1637,12 +1643,24 @@ Contact Information:
         if (enumOptionId) {
           customFields[ASANA_CUSTOM_FIELDS.TICKET_STATUS] = enumOptionId;
           console.log(
-            'Adding Ticket Status to Asana custom field:',
+            '✓ Adding Ticket Status to Asana custom field:',
             ticketStatus
           );
         } else {
           console.warn('Could not find enum option ID for:', ticketStatus);
+          console.warn(
+            'Make sure "' +
+              ticketStatus +
+              '" exists as an option in the Ticket Status field in Asana'
+          );
         }
+      } else if (!ASANA_CUSTOM_FIELDS.TICKET_STATUS) {
+        console.warn(
+          '⚠️ WARNING: Ticket Status custom field is not configured in Asana'
+        );
+        console.warn(
+          '   Please add "Ticket Status" enum field to your Asana project for status sync'
+        );
       }
       // Add Intercom conversation ID for webhook sync
       if (ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID && conversationId) {
@@ -1841,10 +1859,6 @@ Contact Information:
 
         // Save Asana task ID to Intercom ticket
         await updateTicketAttribute(ticketId, asanaTaskId);
-
-        // Always set ticket state to "Submitted" for initial creation
-        console.log('Setting ticket state to "Submitted" for initial creation...');
-        await updateTicketStateId(ticketId, 'Submitted');
 
         // Store mapping for webhook callbacks
         asanaTaskToConversation.set(asanaTaskId, conversationId);
