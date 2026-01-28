@@ -111,7 +111,8 @@ async function initializeTicketStates() {
 }
 
 // Helper function to get ticket state ID by label or category
-async function getTicketStateId(labelOrCategory) {
+// Optionally filter by ticket type ID for more accurate matching
+async function getTicketStateId(labelOrCategory, ticketTypeId = null) {
   // Ensure ticket states are loaded
   const states = await initializeTicketStates();
   
@@ -120,23 +121,32 @@ async function getTicketStateId(labelOrCategory) {
     return null;
   }
 
+  // Filter states by ticket type if provided
+  let applicableStates = states;
+  if (ticketTypeId) {
+    applicableStates = states.filter(state => 
+      state.ticket_types?.data?.some(type => String(type.id) === String(ticketTypeId))
+    );
+    console.log(`  Filtered to ${applicableStates.length} states for ticket type ${ticketTypeId}`);
+  }
+
   const normalizedInput = labelOrCategory.toLowerCase().trim();
 
   // Try to find by internal label
-  let state = states.find(
+  let state = applicableStates.find(
     (s) => s.internal_label.toLowerCase() === normalizedInput
   );
 
   // Try to find by external label
   if (!state) {
-    state = states.find(
+    state = applicableStates.find(
       (s) => s.external_label.toLowerCase() === normalizedInput
     );
   }
 
   // Try to find by category
   if (!state) {
-    state = states.find(
+    state = applicableStates.find(
       (s) => s.category.toLowerCase() === normalizedInput
     );
   }
@@ -386,6 +396,7 @@ async function getConversationIdFromTask(taskId) {
 // Helper function to update Intercom ticket attributes
 async function updateTicketAttribute(ticketId, asanaTaskId) {
   try {
+    console.log(`Updating ticket ${ticketId} with Asana Task ID: ${asanaTaskId}`);
     const response = await fetch(
       `https://api.intercom.io/tickets/${ticketId}`,
       {
@@ -398,22 +409,24 @@ async function updateTicketAttribute(ticketId, asanaTaskId) {
         },
         body: JSON.stringify({
           ticket_attributes: {
-            AsanaTaskID: asanaTaskId,
+            'Asana Task ID': asanaTaskId, // Use exact field name with spaces
           },
         }),
       }
     );
 
     if (response.ok) {
-      console.log('Successfully updated ticket with Asana task ID');
+      const data = await response.json();
+      console.log('✓ Successfully updated ticket with Asana task ID');
+      console.log('Updated ticket attributes:', data.ticket_attributes?.['Asana Task ID']);
       return true;
     } else {
       const errorData = await response.json();
-      console.error('Error updating ticket:', errorData);
+      console.error('✗ Error updating ticket:', errorData);
       return false;
     }
   } catch (error) {
-    console.error('Error updating ticket attribute:', error);
+    console.error('✗ Error updating ticket attribute:', error);
     return false;
   }
 }
@@ -493,21 +506,29 @@ async function updateTicketAsanaStatus(ticketId, status) {
 }
 
 // Helper function to update Intercom ticket state ID based on label or category
-async function updateTicketStateId(ticketId, labelOrCategory) {
+// Optionally accepts ticket type ID for filtering states
+async function updateTicketStateId(ticketId, labelOrCategory, ticketTypeId = null) {
   try {
-    const stateId = await getTicketStateId(labelOrCategory);
+    const stateId = await getTicketStateId(labelOrCategory, ticketTypeId);
 
     if (!stateId) {
       console.error(
-        `✗ Could not find ticket state ID for: "${labelOrCategory}"`
+        `✗ Could not find ticket state ID for: "${labelOrCategory}"${ticketTypeId ? ` (ticket type: ${ticketTypeId})` : ''}`
       );
       
       // Show available states from cache
       const states = await initializeTicketStates();
       if (states && states.length > 0) {
+        // Filter by ticket type if provided
+        const applicableStates = ticketTypeId 
+          ? states.filter(state => 
+              state.ticket_types?.data?.some(type => String(type.id) === String(ticketTypeId))
+            )
+          : states;
+        
         console.error(
-          'Available states:',
-          states.map((s) => s.internal_label).join(', ')
+          `Available states${ticketTypeId ? ` for ticket type ${ticketTypeId}` : ''}:`,
+          applicableStates.map((s) => s.internal_label).join(', ')
         );
       }
       return false;
@@ -1492,7 +1513,7 @@ app.post('/submit', async (req, res) => {
       console.log('Ticket has state:', !!ticket.ticket_state);
 
       // Check if Asana task already exists for this ticket
-      const existingTaskId = ticket.ticket_attributes?.AsanaTaskID;
+      const existingTaskId = ticket.ticket_attributes?.['Asana Task ID'];
       if (existingTaskId) {
         // Task already exists, return early
         const components = [
@@ -1556,6 +1577,7 @@ Contact Information:
       // Process each Asana custom field
       if (asanaCustomFieldSettings && asanaCustomFieldSettings.length > 0) {
         console.log(`Processing ${asanaCustomFieldSettings.length} custom fields from Asana...`);
+        console.log('Available Intercom ticket attributes:', Object.keys(ticketAttrs).join(', '));
 
         for (const setting of asanaCustomFieldSettings) {
           const fieldName = setting.custom_field.name;
@@ -1577,20 +1599,28 @@ Contact Information:
           // Check if this field exists in Intercom ticket attributes
           const intercomValue = ticketAttrs[fieldName];
 
+          // Skip empty arrays (file fields with no files)
+          if (Array.isArray(intercomValue) && intercomValue.length === 0) {
+            console.log(`  ○ "${fieldName}" is empty array, skipping`);
+            continue;
+          }
+
           if (intercomValue !== undefined && intercomValue !== null && intercomValue !== '') {
             console.log(`  ✓ Found "${fieldName}" in Intercom with value:`, 
-              typeof intercomValue === 'object' ? JSON.stringify(intercomValue) : intercomValue);
+              typeof intercomValue === 'object' ? JSON.stringify(intercomValue).substring(0, 100) + '...' : intercomValue);
 
             // First, check if Intercom value is a file/attachment (priority check)
             if (Array.isArray(intercomValue) && intercomValue.length > 0 && intercomValue[0]?.url) {
               // This is a file upload field (array of files)
-              console.log(`    → Detected file upload field, will process as attachment`);
+              console.log(`    → Detected file upload field with ${intercomValue.length} file(s)`);
               const fileUrls = extractAttachmentUrls(intercomValue, fieldName);
+              console.log(`    → Extracted ${fileUrls.length} URL(s):`, fileUrls);
               attachmentUrls.push(...fileUrls);
             } else if (typeof intercomValue === 'object' && intercomValue.url) {
               // Single file object
-              console.log(`    → Detected single file upload, will process as attachment`);
+              console.log(`    → Detected single file upload`);
               const fileUrls = extractAttachmentUrls(intercomValue, fieldName);
+              console.log(`    → Extracted ${fileUrls.length} URL(s):`, fileUrls);
               attachmentUrls.push(...fileUrls);
             }
             // If Asana field is enum, we must look up the option ID
@@ -2242,11 +2272,20 @@ app.post('/asana-webhook-prod', async (req, res) => {
           continue;
         }
 
+        // Fetch full ticket to get ticket type ID
+        const ticket = await getTicket(ticketId);
+        const ticketTypeId = ticket?.ticket_type?.id;
+        
+        if (ticketTypeId) {
+          console.log(`  ℹ Ticket type ID: ${ticketTypeId}`);
+        }
+
         // Update Intercom ticket's Ticket Status if it changed
         if (ticketStatus) {
           const stateUpdateResult = await updateTicketStateId(
             ticketId,
-            ticketStatus
+            ticketStatus,
+            ticketTypeId // Pass ticket type ID for filtering
           );
           if (stateUpdateResult) {
             console.log('  ✓ Successfully updated Intercom ticket state ID');
