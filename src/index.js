@@ -259,6 +259,7 @@ async function getConversation(conversationId) {
 // Helper function to get ticket details from Intercom Tickets API
 async function getTicket(ticketId) {
   try {
+    console.log(`  → Fetching ticket ${ticketId} from Intercom...`);
     const response = await fetch(
       `https://api.intercom.io/tickets/${ticketId}`,
       {
@@ -271,13 +272,19 @@ async function getTicket(ticketId) {
       }
     );
 
+    console.log(`  → Ticket API response status: ${response.status}`);
+
     if (response.ok) {
       const data = await response.json();
+      console.log(`  ✓ Ticket fetched successfully. Has attributes:`, !!data.ticket_attributes);
       return data;
+    } else {
+      const errorData = await response.json().catch(() => ({}));
+      console.error(`  ✗ Ticket API error (${response.status}):`, errorData);
+      return null;
     }
-    return null;
   } catch (error) {
-    console.error('Error fetching ticket from Intercom:', error);
+    console.error('  ✗ Error fetching ticket from Intercom:', error.message);
     return null;
   }
 }
@@ -1417,25 +1424,38 @@ app.post('/initialize', async (req, res) => {
   duplicate submissions per conversation.
 */
 app.post('/submit', async (req, res) => {
-  console.log('Submit endpoint hit with component_id:', req.body.component_id);
-  console.log('Request body:', JSON.stringify(req.body, null, 2));
+  console.log('\n===== SUBMIT ENDPOINT CALLED =====');
+  console.log('Component ID:', req.body.component_id);
+  console.log('Full request body:', JSON.stringify(req.body, null, 2));
 
   const conversationId = req.body.conversation?.id;
   const ticketId = req.body.conversation?.ticket?.id;
+  
+  console.log('Extracted conversation ID:', conversationId);
+  console.log('Extracted ticket ID:', ticketId);
+  console.log('==================================\n');
 
   // Check if this conversation already has an Asana task (only for submit_button)
   if (req.body.component_id === 'submit_button') {
     try {
       // Get ticket ID from request body
+      console.log('=== SUBMIT ROUTE DEBUG ===');
+      console.log('Conversation ID:', conversationId);
+      console.log('Ticket ID:', ticketId);
+      
       if (!ticketId) {
+        console.error('❌ No ticket ID found in request body');
         throw new Error('No ticket found for this conversation');
       }
 
       // Fetch all required data in parallel for optimal performance
-      console.log('Fetching all required data in parallel...');
+      console.log('📡 Fetching all required data in parallel...');
       
       const contactId = req.body.contact?.id || req.body.customer?.id;
       const contactNameFromBody = req.body.contact?.name || req.body.customer?.name;
+      
+      console.log('Contact ID:', contactId);
+      console.log('Contact Name from body:', contactNameFromBody);
 
       const [ticket, asanaCustomFieldSettings, contactNameFromApi] = await Promise.all([
         getTicket(ticketId),
@@ -1443,6 +1463,11 @@ app.post('/submit', async (req, res) => {
         // Only fetch contact name if not in request body and we have a contact ID
         !contactNameFromBody && contactId ? getContactName(contactId) : Promise.resolve(null),
       ]);
+      
+      console.log('✓ Promise.all completed');
+      console.log('Ticket result:', ticket ? 'Fetched successfully' : '❌ NULL/UNDEFINED');
+      console.log('Asana fields result:', asanaCustomFieldSettings ? `${asanaCustomFieldSettings.length} fields` : '❌ NULL/UNDEFINED');
+      console.log('Contact name result:', contactNameFromApi || 'Not fetched');
 
       // Ensure custom fields are initialized (pass already-fetched settings to avoid refetch)
       if (!customFieldsCache) {
@@ -1455,8 +1480,16 @@ app.post('/submit', async (req, res) => {
 
       // Validate ticket was fetched successfully
       if (!ticket) {
+        console.error('❌ TICKET FETCH FAILED');
+        console.error('Ticket ID used:', ticketId);
+        console.error('Ticket result:', ticket);
         throw new Error('Failed to fetch ticket details');
       }
+      
+      console.log('✓ Ticket validation passed');
+      console.log('Ticket ID:', ticket.id || 'N/A');
+      console.log('Ticket has attributes:', !!ticket.ticket_attributes);
+      console.log('Ticket has state:', !!ticket.ticket_state);
 
       // Check if Asana task already exists for this ticket
       const existingTaskId = ticket.ticket_attributes?.AsanaTaskID;
