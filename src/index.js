@@ -28,15 +28,16 @@ if (!ASANA_TOKEN || !ASANA_WORKSPACE || !ASANA_PROJECT) {
 
 // Asana Custom Field GIDs - Will be automatically populated on server start
 const ASANA_CUSTOM_FIELDS = {
-  WALLET: null,
-  PAYMENT_GATEWAY: null,
-  TRANSACTION_ID: null,
-  AMOUNT: null,
-  AGENT_REMARK: null,
+  CASH_OUT_DATE_AND_TIME: null, // Date field in Intercom, Text in Asana (Singapore timezone)
+  CASH_OUT_SLIP: null, // File upload field
+  E_WALLET: null, // Text field
+  TRANSACTION_ID: null, // Text field
+  AGENT_NUMBER: null, // Text field
+  AMOUNT: null, // Text field
+  REMARK: null, // Text field
+  CASHOUT_SLIP_ASANA: null, // File upload field (Asana specific)
   INTERCOM_CONVERSATION_ID: null, // For webhook sync back to Intercom
   TICKET_STATUS: null, // For syncing ticket status between Asana and Intercom
-  TICKET_DUE_DATE: null, // For syncing due date between Asana and Intercom (text format)
-  TICKET_DATE: null, // For syncing due date between Asana and Intercom (date format)
 };
 
 // Cache for custom field mappings and types
@@ -44,61 +45,98 @@ let customFieldsCache = null;
 let customFieldTypes = {};
 
 // Intercom configuration
-const INTERCOM_TOKEN =
-  'dG9rOmQxMmIxYTQxXzcwMDhfNGE2Ml9iODU1XzQ5MjFkNjA4NWRlZDoxOjA=';
-const INTERCOM_ADMIN_ID = '8678718'; // Admin ID for posting notes
+const INTERCOM_TOKEN = process.env.INTERCOM_TOKEN;
+const INTERCOM_ADMIN_ID = process.env.INTERCOM_ADMIN_ID;
 
-// Intercom ticket state mappings
-const INTERCOM_TICKET_STATES = [
-  {
-    type: 'ticket_state',
-    id: '3480792',
-    category: 'submitted',
-    internal_label: 'Submitted',
-    external_label: 'Submitted',
-  },
-  {
-    type: 'ticket_state',
-    id: '3480793',
-    category: 'in_progress',
-    internal_label: 'In progress',
-    external_label: 'In progress',
-  },
-  {
-    type: 'ticket_state',
-    id: '3480794',
-    category: 'waiting_on_customer',
-    internal_label: 'Waiting on customer',
-    external_label: 'Waiting on you',
-  },
-  {
-    type: 'ticket_state',
-    id: '3480795',
-    category: 'resolved',
-    internal_label: 'Resolved',
-    external_label: 'Resolved',
-  },
-];
+if (!INTERCOM_TOKEN || !INTERCOM_ADMIN_ID) {
+  throw new Error(
+    [
+      'Missing required Intercom environment variables.',
+      'Set these in your environment (or copy .env.example to .env):',
+      '- INTERCOM_TOKEN',
+      '- INTERCOM_ADMIN_ID',
+    ].join('\n')
+  );
+}
+
+// Cache for ticket states fetched from Intercom API
+let ticketStatesCache = null;
+
+// Helper function to fetch all ticket states from Intercom API
+async function fetchTicketStates() {
+  try {
+    console.log('Fetching ticket states from Intercom API...');
+    const response = await fetch('https://api.intercom.io/ticket-states', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${INTERCOM_TOKEN}`,
+        'Intercom-Version': '2.14',
+        Accept: 'application/json',
+      },
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const states = data.ticket_states || [];
+      console.log(`✓ Fetched ${states.length} ticket states from Intercom`);
+      
+      // Log available states for reference
+      if (states.length > 0) {
+        console.log('Available ticket states:');
+        states.forEach((state) => {
+          console.log(
+            `  - ${state.internal_label} (category: ${state.category}, id: ${state.id})`
+          );
+        });
+      }
+      
+      return states;
+    } else {
+      const errorData = await response.json();
+      console.error('Error fetching ticket states from Intercom:', errorData);
+      return [];
+    }
+  } catch (error) {
+    console.error('Error fetching ticket states:', error);
+    return [];
+  }
+}
+
+// Helper function to initialize ticket states cache
+async function initializeTicketStates() {
+  if (!ticketStatesCache) {
+    ticketStatesCache = await fetchTicketStates();
+  }
+  return ticketStatesCache;
+}
 
 // Helper function to get ticket state ID by label or category
-function getTicketStateId(labelOrCategory) {
+async function getTicketStateId(labelOrCategory) {
+  // Ensure ticket states are loaded
+  const states = await initializeTicketStates();
+  
+  if (!states || states.length === 0) {
+    console.error('No ticket states available');
+    return null;
+  }
+
   const normalizedInput = labelOrCategory.toLowerCase().trim();
 
   // Try to find by internal label
-  let state = INTERCOM_TICKET_STATES.find(
+  let state = states.find(
     (s) => s.internal_label.toLowerCase() === normalizedInput
   );
 
   // Try to find by external label
   if (!state) {
-    state = INTERCOM_TICKET_STATES.find(
+    state = states.find(
       (s) => s.external_label.toLowerCase() === normalizedInput
     );
   }
 
   // Try to find by category
   if (!state) {
-    state = INTERCOM_TICKET_STATES.find(
+    state = states.find(
       (s) => s.category.toLowerCase() === normalizedInput
     );
   }
@@ -244,60 +282,7 @@ async function getTicket(ticketId) {
   }
 }
 
-// Helper function to find attachment URL by ID from Intercom conversation
-function findAttachmentUrlById(conversation, attachmentId) {
-  console.log('Searching for attachment with ID:', attachmentId);
 
-  const allAttachments = [];
-
-  // Check the main conversation source for attachments
-  if (
-    conversation.source &&
-    conversation.source.attachments &&
-    Array.isArray(conversation.source.attachments)
-  ) {
-    allAttachments.push(...conversation.source.attachments);
-  }
-
-  // Check each conversation part for attachments
-  if (
-    conversation.conversation_parts &&
-    conversation.conversation_parts.conversation_parts &&
-    Array.isArray(conversation.conversation_parts.conversation_parts)
-  ) {
-    conversation.conversation_parts.conversation_parts.forEach((part) => {
-      if (part.attachments && Array.isArray(part.attachments)) {
-        allAttachments.push(...part.attachments);
-      }
-    });
-  }
-
-  console.log(
-    `Total attachments found in conversation: ${allAttachments.length}`
-  );
-
-  // Try to find attachment by matching the ID in the URL
-  for (const attachment of allAttachments) {
-    console.log(
-      'Checking attachment:',
-      attachment.name,
-      'URL:',
-      attachment.url
-    );
-
-    // Check if the attachment ID appears in the URL
-    if (attachment.url && attachment.url.includes(String(attachmentId))) {
-      console.log('✓ Found matching attachment!');
-      console.log('  Name:', attachment.name);
-      console.log('  URL:', attachment.url);
-      console.log('  Content Type:', attachment.content_type);
-      return attachment.url;
-    }
-  }
-
-  console.log('✗ No attachment found with ID:', attachmentId);
-  return null;
-}
 
 // Helper function to get conversation ID from Asana task
 async function getConversationIdFromTask(taskId) {
@@ -503,16 +488,21 @@ async function updateTicketAsanaStatus(ticketId, status) {
 // Helper function to update Intercom ticket state ID based on label or category
 async function updateTicketStateId(ticketId, labelOrCategory) {
   try {
-    const stateId = getTicketStateId(labelOrCategory);
+    const stateId = await getTicketStateId(labelOrCategory);
 
     if (!stateId) {
       console.error(
         `✗ Could not find ticket state ID for: "${labelOrCategory}"`
       );
-      console.error(
-        'Available states:',
-        INTERCOM_TICKET_STATES.map((s) => s.internal_label).join(', ')
-      );
+      
+      // Show available states from cache
+      const states = await initializeTicketStates();
+      if (states && states.length > 0) {
+        console.error(
+          'Available states:',
+          states.map((s) => s.internal_label).join(', ')
+        );
+      }
       return false;
     }
 
@@ -733,36 +723,17 @@ async function getAsanaCustomFields() {
   }
 }
 
-// Helper function to get custom field details including type
-async function getCustomFieldDetails(fieldGid) {
-  try {
-    const response = await fetch(
-      `https://app.asana.com/api/1.0/custom_fields/${fieldGid}`,
-      {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${ASANA_TOKEN}`,
-          Accept: 'application/json',
-        },
-      }
-    );
 
-    if (response.ok) {
-      const data = await response.json();
-      return data.data;
-    }
-    return null;
-  } catch (error) {
-    console.error('Error fetching custom field details:', error);
-    return null;
-  }
-}
 
 // Helper function to initialize custom field mappings
-async function initializeCustomFieldMappings() {
+// Can accept already-fetched customFieldSettings to avoid duplicate API calls
+async function initializeCustomFieldMappings(customFieldSettings = null) {
   try {
-    console.log('Fetching Asana custom field mappings...');
-    const customFieldSettings = await getAsanaCustomFields();
+    // Only fetch if not provided
+    if (!customFieldSettings) {
+      console.log('Fetching Asana custom field mappings...');
+      customFieldSettings = await getAsanaCustomFields();
+    }
 
     if (!customFieldSettings || customFieldSettings.length === 0) {
       console.warn('⚠ No custom fields found in Asana project');
@@ -772,88 +743,70 @@ async function initializeCustomFieldMappings() {
       return null;
     }
 
-    const mappings = {};
     const fieldTypes = {};
-    const fieldNames = {
-      Wallet: 'WALLET',
-      'Payment Gateway': 'PAYMENT_GATEWAY',
-      'Transaction ID': 'TRANSACTION_ID',
-      Amount: 'AMOUNT',
-      'Agent Remark': 'AGENT_REMARK',
-      'Intercom Conversation ID': 'INTERCOM_CONVERSATION_ID',
-      'Ticket Status': 'TICKET_STATUS',
-      'Ticket Due Date': 'TICKET_DUE_DATE',
-      'Ticket Date': 'TICKET_DATE', // Date format field for due date sync
-    };
+    
+    // Track critical system fields
+    let hasIntercomConversationId = false;
+    let hasTicketStatus = false;
 
-    // Map custom field names to their GIDs and types
+    // Map all custom fields dynamically (no hardcoded list)
+    console.log(`Mapping ${customFieldSettings.length} custom fields from Asana...`);
     customFieldSettings.forEach((setting) => {
       const fieldName = setting.custom_field.name;
       const fieldGid = setting.custom_field.gid;
       const fieldType = setting.custom_field.resource_subtype;
 
-      if (fieldNames[fieldName]) {
-        const mappingKey = fieldNames[fieldName];
-        mappings[mappingKey] = fieldGid;
-        fieldTypes[mappingKey] = fieldType;
-        console.log(
-          `✓ Mapped "${fieldName}" → ${fieldGid} (type: ${fieldType})`
-        );
-
-        // Warn if Ticket Due Date is not a text type (we format with time now)
-        if (fieldName === 'Ticket Due Date' && fieldType !== 'text') {
-          console.warn(
-            `⚠️ WARNING: "${fieldName}" is type "${fieldType}" but should be "text"`
-          );
-          console.warn(
-            '   Due date syncing will be DISABLED. Please change the field type in Asana to "text".'
-          );
-        }
+      // Track critical fields
+      if (fieldName === 'Intercom Conversation ID') {
+        hasIntercomConversationId = true;
+        ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID = fieldGid;
+        console.log(`✓ Mapped critical field: "${fieldName}" → ${fieldGid} (type: ${fieldType})`);
+      } else if (fieldName === 'Ticket Status') {
+        hasTicketStatus = true;
+        ASANA_CUSTOM_FIELDS.TICKET_STATUS = fieldGid;
+        console.log(`✓ Mapped critical field: "${fieldName}" → ${fieldGid} (type: ${fieldType})`);
+      } else {
+        console.log(`✓ Mapped: "${fieldName}" → ${fieldGid} (type: ${fieldType})`);
       }
-    });
 
-    // Update the global ASANA_CUSTOM_FIELDS object and store types
-    Object.keys(mappings).forEach((key) => {
-      ASANA_CUSTOM_FIELDS[key] = mappings[key];
+      // Store all field types for ALL fields (including system fields)
+      fieldTypes[fieldGid] = fieldType;
     });
 
     // Store field types globally
     customFieldTypes = fieldTypes;
 
-    // Check which fields are missing
-    const missingFields = Object.keys(fieldNames).filter(
-      (name) => !mappings[fieldNames[name]]
-    );
-
-    if (missingFields.length > 0) {
+    // Warn about missing critical fields
+    if (!hasIntercomConversationId) {
+      console.warn('\n⚠⚠⚠ CRITICAL WARNING ⚠⚠⚠');
       console.warn(
-        '⚠ Missing custom fields in Asana project:',
-        missingFields.join(', ')
+        'The "Intercom Conversation ID" field is REQUIRED for webhook sync!'
       );
       console.warn(
-        'Please create these fields in your Asana project for full syncing.'
+        'Without this field, Asana webhooks cannot update Intercom tickets.'
       );
-
-      // Special warning for critical field
-      if (missingFields.includes('Intercom Conversation ID')) {
-        console.warn('\n⚠⚠⚠ CRITICAL WARNING ⚠⚠⚠');
-        console.warn(
-          'The "Intercom Conversation ID" field is REQUIRED for webhook sync!'
-        );
-        console.warn(
-          'Without this field, Asana webhooks cannot update Intercom tickets.'
-        );
-        console.warn(
-          'Please create a TEXT field named "Intercom Conversation ID" in your Asana project.'
-        );
-        console.warn('⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠\n');
-      }
-    } else {
-      console.log('✓ All custom fields mapped successfully');
+      console.warn(
+        'Please create a TEXT field named "Intercom Conversation ID" in your Asana project.'
+      );
+      console.warn('⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠\n');
     }
 
-    customFieldsCache = mappings;
-    return mappings;
+    if (!hasTicketStatus) {
+      console.warn(
+        '⚠️ WARNING: "Ticket Status" field not found in Asana project'
+      );
+      console.warn(
+        '   Please add "Ticket Status" enum field to your Asana project for status sync'
+      );
+    }
+
+    if (hasIntercomConversationId && hasTicketStatus) {
+      console.log('✓ All critical fields mapped successfully');
+    }
+
+    // Mark as initialized by storing the custom field settings
+    customFieldsCache = customFieldSettings;
+    return customFieldSettings;
   } catch (error) {
     console.error('Error initializing custom field mappings:', error);
     return null;
@@ -919,6 +872,47 @@ function formatDateForAsana(dateValue) {
     console.error('Error formatting date:', error);
     return null;
   }
+}
+
+// Helper function to extract attachment URLs from field value
+function extractAttachmentUrls(fieldValue, fieldName) {
+  const urls = [];
+
+  if (!fieldValue) {
+    return urls;
+  }
+
+  // Handle array of attachment objects
+  if (Array.isArray(fieldValue) && fieldValue.length > 0) {
+    console.log(`  Found ${fieldValue.length} file(s) in ${fieldName}`);
+    for (let i = 0; i < fieldValue.length; i++) {
+      const attachment = fieldValue[i];
+      if (attachment && attachment.url) {
+        urls.push(attachment.url);
+        console.log(`  ✓ File ${i + 1}:`, attachment.url);
+        if (attachment.name) console.log(`    Name: ${attachment.name}`);
+        if (attachment.content_type)
+          console.log(`    Type: ${attachment.content_type}`);
+      } else {
+        console.log(`  ⚠ File ${i + 1} missing URL property`);
+      }
+    }
+  }
+  // Handle single attachment object
+  else if (typeof fieldValue === 'object' && fieldValue.url) {
+    urls.push(fieldValue.url);
+    console.log(`  ✓ Found single file in ${fieldName}`);
+    if (fieldValue.name) console.log(`    Name: ${fieldValue.name}`);
+  }
+  // Handle URL string
+  else if (isValidUrl(String(fieldValue))) {
+    urls.push(String(fieldValue));
+    console.log(`  ✓ ${fieldName} contains URL string`);
+  } else {
+    console.log(`  ⚠ ${fieldName} is not a valid URL or file object`);
+  }
+
+  return urls;
 }
 
 // Helper function to upload attachment to Asana task
@@ -1048,15 +1042,17 @@ app.get('/asana-custom-fields', async (req, res) => {
         project_id: ASANA_PROJECT,
         all_custom_fields: fields,
         mapped_fields: {
-          WALLET: ASANA_CUSTOM_FIELDS.WALLET,
-          PAYMENT_GATEWAY: ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY,
+          CASH_OUT_DATE_AND_TIME: ASANA_CUSTOM_FIELDS.CASH_OUT_DATE_AND_TIME,
+          CASH_OUT_SLIP: ASANA_CUSTOM_FIELDS.CASH_OUT_SLIP,
+          E_WALLET: ASANA_CUSTOM_FIELDS.E_WALLET,
           TRANSACTION_ID: ASANA_CUSTOM_FIELDS.TRANSACTION_ID,
+          AGENT_NUMBER: ASANA_CUSTOM_FIELDS.AGENT_NUMBER,
           AMOUNT: ASANA_CUSTOM_FIELDS.AMOUNT,
-          AGENT_REMARK: ASANA_CUSTOM_FIELDS.AGENT_REMARK,
+          REMARK: ASANA_CUSTOM_FIELDS.REMARK,
+          CASHOUT_SLIP_ASANA: ASANA_CUSTOM_FIELDS.CASHOUT_SLIP_ASANA,
           INTERCOM_CONVERSATION_ID:
             ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID,
           TICKET_STATUS: ASANA_CUSTOM_FIELDS.TICKET_STATUS,
-          TICKET_DUE_DATE: ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE,
         },
         message:
           'Custom fields are automatically mapped on server start. Check mapped_fields to see current mappings.',
@@ -1089,14 +1085,16 @@ app.get('/webhook-info', (req, res) => {
     webhook_secret_stored: asanaWebhookSecret ? true : false,
     project_gid: ASANA_PROJECT,
     custom_field_mappings: {
-      WALLET: ASANA_CUSTOM_FIELDS.WALLET,
-      PAYMENT_GATEWAY: ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY,
+      CASH_OUT_DATE_AND_TIME: ASANA_CUSTOM_FIELDS.CASH_OUT_DATE_AND_TIME,
+      CASH_OUT_SLIP: ASANA_CUSTOM_FIELDS.CASH_OUT_SLIP,
+      E_WALLET: ASANA_CUSTOM_FIELDS.E_WALLET,
       TRANSACTION_ID: ASANA_CUSTOM_FIELDS.TRANSACTION_ID,
+      AGENT_NUMBER: ASANA_CUSTOM_FIELDS.AGENT_NUMBER,
       AMOUNT: ASANA_CUSTOM_FIELDS.AMOUNT,
-      AGENT_REMARK: ASANA_CUSTOM_FIELDS.AGENT_REMARK,
+      REMARK: ASANA_CUSTOM_FIELDS.REMARK,
+      CASHOUT_SLIP_ASANA: ASANA_CUSTOM_FIELDS.CASHOUT_SLIP_ASANA,
       INTERCOM_CONVERSATION_ID: ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID,
       TICKET_STATUS: ASANA_CUSTOM_FIELDS.TICKET_STATUS,
-      TICKET_DUE_DATE: ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE,
     },
     setup_instructions: {
       asana: {
@@ -1427,149 +1425,90 @@ app.post('/submit', async (req, res) => {
 
   // Check if this conversation already has an Asana task (only for submit_button)
   if (req.body.component_id === 'submit_button') {
-    if (conversationId && ticketId) {
-      // Fetch both conversation and ticket in parallel
-      const [conversation, ticket] = await Promise.all([
-        getConversation(conversationId),
-        getTicket(ticketId),
-      ]);
-
-      if (ticket) {
-        const existingTaskId = ticket?.ticket_attributes?.AsanaTaskID;
-
-        if (existingTaskId) {
-          // Task already exists
-          const components = [
-            {
-              type: 'text',
-              id: 'already_submitted',
-              text: '✓ Task Already Exists',
-              align: 'center',
-              style: 'header',
-            },
-            {
-              type: 'text',
-              id: 'task_id',
-              text: `Task ID: ${existingTaskId}`,
-              align: 'center',
-              style: 'paragraph',
-            },
-          ];
-
-          const alreadySubmittedCanvas = {
-            canvas: {
-              content: {
-                components: components,
-              },
-            },
-          };
-          return res.send(alreadySubmittedCanvas);
-        }
-      }
-    }
-
     try {
-      // Extract contact name from Intercom data
-      let contactName =
-        req.body.contact?.name || req.body.customer?.name || null;
-
-      // If no name in request body, fetch from Intercom API
-      if (!contactName) {
-        const contactId = req.body.contact?.id || req.body.customer?.id;
-        if (contactId) {
-          contactName = await getContactName(contactId);
-        } else {
-          contactName = 'Unknown Contact';
-        }
-      }
-
       // Get ticket ID from request body
       if (!ticketId) {
         throw new Error('No ticket found for this conversation');
       }
 
-      // Fetch ticket details to access ticket attributes
-      const ticket = await getTicket(ticketId);
+      // Fetch all required data in parallel for optimal performance
+      console.log('Fetching all required data in parallel...');
+      
+      const contactId = req.body.contact?.id || req.body.customer?.id;
+      const contactNameFromBody = req.body.contact?.name || req.body.customer?.name;
 
+      const [ticket, asanaCustomFieldSettings, contactNameFromApi] = await Promise.all([
+        getTicket(ticketId),
+        getAsanaCustomFields(),
+        // Only fetch contact name if not in request body and we have a contact ID
+        !contactNameFromBody && contactId ? getContactName(contactId) : Promise.resolve(null),
+      ]);
+
+      // Ensure custom fields are initialized (pass already-fetched settings to avoid refetch)
+      if (!customFieldsCache) {
+        console.log('Custom fields not initialized, initializing now...');
+        await initializeCustomFieldMappings(asanaCustomFieldSettings);
+      }
+
+      // Determine contact name
+      const contactName = contactNameFromBody || contactNameFromApi || 'Unknown Contact';
+
+      // Validate ticket was fetched successfully
       if (!ticket) {
         throw new Error('Failed to fetch ticket details');
       }
 
+      // Check if Asana task already exists for this ticket
+      const existingTaskId = ticket.ticket_attributes?.AsanaTaskID;
+      if (existingTaskId) {
+        // Task already exists, return early
+        const components = [
+          {
+            type: 'text',
+            id: 'already_submitted',
+            text: '✓ Task Already Exists',
+            align: 'center',
+            style: 'header',
+          },
+          {
+            type: 'text',
+            id: 'task_id',
+            text: `Task ID: ${existingTaskId}`,
+            align: 'center',
+            style: 'paragraph',
+          },
+        ];
+
+        const alreadySubmittedCanvas = {
+          canvas: {
+            content: {
+              components: components,
+            },
+          },
+        };
+        return res.send(alreadySubmittedCanvas);
+      }
+
       const ticketAttrs = ticket?.ticket_attributes || {};
 
-      // Extract the custom fields from ticket attributes
-      const wallet = ticketAttrs.Wallet || '';
-      const paymentGateway = ticketAttrs['Payment Gateway'] || '';
-      const transactionID = ticketAttrs['Transaction ID'] || '';
-      const amount = ticketAttrs.Amount || '';
-      const agentRemark = ticketAttrs['Agent Remark'] || '';
-      // Always default to "Submitted" if no status exists in Intercom ticket
-      const ticketStatus = ticketAttrs['Ticket Status'] || 'Submitted';
-      const dueDate = ticketAttrs['Due Date'] || '';
+      // Get the actual Intercom ticket state (not from custom attributes)
+      // Intercom ticket has ticket_state object with name, category, internal_label, etc.
+      const ticketStatus = ticket?.ticket_state?.name || 
+                          ticket?.ticket_state?.internal_label || 
+                          ticket?.state || 
+                          'Submitted';
 
-      console.log('Ticket Status from Intercom:', ticketStatus);
+      console.log('Ticket Status from Intercom ticket_state:', ticketStatus);
+      console.log('\n===== DYNAMIC FIELD SYNC FROM INTERCOM TO ASANA =====');
 
-      // Handle attachments from ticket attributes
-      // Ticket attachment format: array of objects with url property
-      let attachmentFieldValue =
-        ticketAttrs.Attachment || ticketAttrs.attachment; // Support both formats
+      if (!asanaCustomFieldSettings || asanaCustomFieldSettings.length === 0) {
+        console.warn('⚠ No custom fields found in Asana project');
+      }
+
+      // Handle file upload fields for attachments
       let attachmentUrls = [];
-
-      console.log('\n===== ATTACHMENT PROCESSING FROM TICKET =====');
-      console.log(
-        'Attachment field raw value:',
-        JSON.stringify(attachmentFieldValue)
-      );
-      console.log('Attachment field type:', typeof attachmentFieldValue);
-      console.log('Is array:', Array.isArray(attachmentFieldValue));
-
-      // Handle ticket attachment format (array of objects with url)
-      if (
-        Array.isArray(attachmentFieldValue) &&
-        attachmentFieldValue.length > 0
-      ) {
-        // Process all attachments in the array
-        console.log(
-          `Found ${attachmentFieldValue.length} attachment(s) to process`
-        );
-        for (let i = 0; i < attachmentFieldValue.length; i++) {
-          const attachment = attachmentFieldValue[i];
-          if (attachment && attachment.url) {
-            attachmentUrls.push(attachment.url);
-            console.log(`✓ Attachment ${i + 1}:`, attachment.url);
-            console.log('  Name:', attachment.name);
-            console.log('  Content Type:', attachment.content_type);
-          } else {
-            console.log(`⚠ Attachment ${i + 1} missing URL property`);
-          }
-        }
-      } else if (attachmentFieldValue) {
-        // Handle legacy format (single URL string or single object)
-        if (
-          typeof attachmentFieldValue === 'object' &&
-          attachmentFieldValue.url
-        ) {
-          attachmentUrls.push(attachmentFieldValue.url);
-          console.log('✓ Found single attachment object with URL');
-        } else if (isValidUrl(String(attachmentFieldValue))) {
-          attachmentUrls.push(String(attachmentFieldValue));
-          console.log('✓ Attachment field contains URL string');
-        } else {
-          console.log('⚠ Attachment field is not a valid URL or array');
-        }
-      } else {
-        console.log('No attachment in ticket attributes');
-      }
-
-      if (attachmentUrls.length > 0) {
-        console.log(
-          `Final attachment URLs to use (${attachmentUrls.length}):`,
-          attachmentUrls
-        );
-      } else {
-        console.log('No attachments to process for this task');
-      }
-      console.log('==================================================\n');
+      
+      console.log('\n===== FILE UPLOAD PROCESSING FROM TICKET =====');
 
       // Build basic task notes
       const taskNotes = `Task created from Intercom conversation ${conversationId}
@@ -1578,68 +1517,105 @@ Contact Information:
 - Name: ${contactName}
 - Email: ${req.body.contact?.email || req.body.customer?.email || 'N/A'}`;
 
-      // Ensure custom fields are initialized (fallback if server start failed)
-      if (!customFieldsCache) {
-        console.log('Custom fields not initialized, initializing now...');
-        await initializeCustomFieldMappings();
-      }
-
-      // Build custom fields object for Asana
-      // All values must be converted to strings for Asana API
+      // Build custom fields object for Asana dynamically
       const customFields = {};
 
-      if (ASANA_CUSTOM_FIELDS.WALLET && wallet) {
-        customFields[ASANA_CUSTOM_FIELDS.WALLET] = String(wallet);
-      }
-      if (ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY && paymentGateway) {
-        customFields[ASANA_CUSTOM_FIELDS.PAYMENT_GATEWAY] =
-          String(paymentGateway);
-      }
-      if (ASANA_CUSTOM_FIELDS.TRANSACTION_ID && transactionID) {
-        customFields[ASANA_CUSTOM_FIELDS.TRANSACTION_ID] =
-          String(transactionID);
-      }
-      if (ASANA_CUSTOM_FIELDS.AMOUNT && amount) {
-        customFields[ASANA_CUSTOM_FIELDS.AMOUNT] = String(amount);
-      }
-      if (ASANA_CUSTOM_FIELDS.AGENT_REMARK && agentRemark) {
-        customFields[ASANA_CUSTOM_FIELDS.AGENT_REMARK] = String(agentRemark);
-      }
-      // Add Due Date field - formatted as text in Singapore timezone
-      if (ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE && dueDate) {
-        const fieldType = customFieldTypes['TICKET_DUE_DATE'];
+      // Process each Asana custom field
+      if (asanaCustomFieldSettings && asanaCustomFieldSettings.length > 0) {
+        console.log(`Processing ${asanaCustomFieldSettings.length} custom fields from Asana...`);
 
-        if (fieldType === 'text') {
-          // Format date as text: M/D/YYYY, h:mm AM/PM (Singapore time)
-          const formattedDate = formatDateForAsana(dueDate);
-          if (formattedDate) {
-            customFields[ASANA_CUSTOM_FIELDS.TICKET_DUE_DATE] = formattedDate;
-            console.log(
-              'Adding Due Date to Asana custom field (text):',
-              formattedDate,
-              '(original:',
-              dueDate,
-              ')'
-            );
-          } else {
-            console.warn('Could not format Due Date for Asana:', dueDate);
+        for (const setting of asanaCustomFieldSettings) {
+          const fieldName = setting.custom_field.name;
+          const fieldGid = setting.custom_field.gid;
+          const fieldType = setting.custom_field.resource_subtype;
+
+          // Skip Ticket Status field - it's reserved for Intercom ticket status management
+          if (fieldName === 'Ticket Status') {
+            console.log(`  ⊘ Skipping "${fieldName}" - reserved for ticket status management`);
+            continue;
           }
-        } else if (fieldType === 'date') {
-          console.warn(
-            `⚠️ Skipping Due Date sync: Field type is "date", expected "text"`
-          );
-          console.warn(
-            'Due date is now formatted as text with time. Please change "Ticket Due Date" field type to "text" in Asana.'
-          );
-        } else {
-          console.warn(
-            `⚠️ Unexpected field type for Ticket Due Date: "${fieldType}"`
-          );
-          console.warn(
-            'Expected "text" field type for formatted date with time.'
-          );
+
+          // Skip Intercom Conversation ID - it's system field
+          if (fieldName === 'Intercom Conversation ID') {
+            console.log(`  ⊘ Skipping "${fieldName}" - system field (will be added separately)`);
+            continue;
+          }
+
+          // Check if this field exists in Intercom ticket attributes
+          const intercomValue = ticketAttrs[fieldName];
+
+          if (intercomValue !== undefined && intercomValue !== null && intercomValue !== '') {
+            console.log(`  ✓ Found "${fieldName}" in Intercom with value:`, 
+              typeof intercomValue === 'object' ? JSON.stringify(intercomValue) : intercomValue);
+
+            // First, check if Intercom value is a file/attachment (priority check)
+            if (Array.isArray(intercomValue) && intercomValue.length > 0 && intercomValue[0]?.url) {
+              // This is a file upload field (array of files)
+              console.log(`    → Detected file upload field, will process as attachment`);
+              const fileUrls = extractAttachmentUrls(intercomValue, fieldName);
+              attachmentUrls.push(...fileUrls);
+            } else if (typeof intercomValue === 'object' && intercomValue.url) {
+              // Single file object
+              console.log(`    → Detected single file upload, will process as attachment`);
+              const fileUrls = extractAttachmentUrls(intercomValue, fieldName);
+              attachmentUrls.push(...fileUrls);
+            }
+            // If Asana field is enum, we must look up the option ID
+            else if (fieldType === 'enum') {
+              const enumOptionId = await getAsanaEnumOptionId(fieldGid, String(intercomValue));
+              if (enumOptionId) {
+                customFields[fieldGid] = enumOptionId;
+                console.log(`    → Syncing as enum: ${intercomValue} (ID: ${enumOptionId})`);
+              } else {
+                console.log(`    ⚠ Could not find enum option "${intercomValue}" in Asana field, skipping`);
+              }
+            }
+            // If Asana field is date type, format as YYYY-MM-DD
+            else if (fieldType === 'date') {
+              const formattedDateField = formatDateForAsanaDateField(intercomValue);
+              if (formattedDateField) {
+                customFields[fieldGid] = formattedDateField;
+                console.log(`    → Syncing as date field: ${formattedDateField}`);
+              } else {
+                console.log(`    ⚠ Could not format date "${intercomValue}", skipping`);
+              }
+            }
+            // For all other cases (text, number, etc.), handle based on field name pattern or as text
+            else {
+              // Check if it's a date/time field by name pattern (for text fields in Asana)
+              if ((fieldName.toLowerCase().includes('date') || fieldName.toLowerCase().includes('time')) 
+                  && typeof intercomValue !== 'object') {
+                const formattedDate = formatDateForAsana(intercomValue);
+                if (formattedDate) {
+                  customFields[fieldGid] = formattedDate;
+                  console.log(`    → Syncing as formatted date text: ${formattedDate}`);
+                } else {
+                  // Fallback to string value
+                  customFields[fieldGid] = String(intercomValue);
+                  console.log(`    → Syncing as text: ${String(intercomValue)}`);
+                }
+              } else {
+                // Default: sync as text/string (works for text and number fields in Asana)
+                customFields[fieldGid] = String(intercomValue);
+                console.log(`    → Syncing as text: ${String(intercomValue)}`);
+              }
+            }
+          } else {
+            console.log(`  ○ "${fieldName}" not found or empty in Intercom ticket attributes`);
+          }
         }
       }
+
+      if (attachmentUrls.length > 0) {
+        console.log(
+          `\nFinal attachment URLs to upload (${attachmentUrls.length}):`,
+          attachmentUrls
+        );
+      } else {
+        console.log('\nNo file uploads to process for this task');
+      }
+      console.log('==================================================\n');
+
       // Add Ticket Status for webhook sync (enum field requires option ID)
       // Always populate Ticket Status - defaults to "Submitted" if not in Intercom
       if (ASANA_CUSTOM_FIELDS.TICKET_STATUS && ticketStatus) {
@@ -1674,6 +1650,7 @@ Contact Information:
           '   Please add "Ticket Status" enum field to your Asana project for status sync'
         );
       }
+
       // Add Intercom conversation ID for webhook sync
       if (ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID && conversationId) {
         customFields[ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID] =
@@ -1689,41 +1666,6 @@ Contact Information:
         console.warn(
           '   Webhook sync will not work without this field. Please add it to your Asana project.'
         );
-      }
-
-      // Add Ticket Date field (date format) - sync Due Date from Intercom
-      if (ASANA_CUSTOM_FIELDS.TICKET_DATE && dueDate) {
-        const fieldType = customFieldTypes['TICKET_DATE'];
-
-        if (fieldType === 'date') {
-          // Format date as YYYY-MM-DD for Asana date field
-          const formattedDate = formatDateForAsanaDateField(dueDate);
-          if (formattedDate) {
-            // Asana date fields require an object with 'date' property
-            customFields[ASANA_CUSTOM_FIELDS.TICKET_DATE] = {
-              date: formattedDate,
-            };
-            console.log(
-              '✓ Adding Ticket Date to Asana custom field (date format):',
-              formattedDate,
-              '(original:',
-              dueDate,
-              ')'
-            );
-          } else {
-            console.warn(
-              'Could not format Due Date for Asana Ticket Date field:',
-              dueDate
-            );
-          }
-        } else {
-          console.warn(
-            `⚠️ Ticket Date field type is "${fieldType}", expected "date"`
-          );
-          console.warn(
-            'Please ensure "Ticket Date" field in Asana is set to date type.'
-          );
-        }
       }
 
       console.log('Custom fields to sync:', Object.keys(customFields).length);
@@ -2305,6 +2247,9 @@ const listener = app.listen(PORT, async () => {
 
   // Initialize custom field mappings from Asana
   await initializeCustomFieldMappings();
+
+  // Initialize ticket states from Intercom
+  await initializeTicketStates();
 
   console.log('========================================\n');
   console.log('✓ Server is ready to accept requests');
