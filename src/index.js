@@ -66,7 +66,7 @@ let ticketStatesCache = null;
 async function fetchTicketStates() {
   try {
     console.log('Fetching ticket states from Intercom API...');
-    const response = await fetch('https://api.intercom.io/ticket-states', {
+    const response = await fetch('https://api.intercom.io/ticket_states', {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${INTERCOM_TOKEN}`,
