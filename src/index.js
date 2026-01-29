@@ -76,16 +76,17 @@ async function fetchTicketStates() {
     });
 
     if (response.ok) {
-      const data = await response.json();
-      const states = data.ticket_states || [];
+      const responseData = await response.json();
+      const states = responseData.data || []; // API returns states in 'data' array, not 'ticket_states'
       console.log(`✓ Fetched ${states.length} ticket states from Intercom`);
       
       // Log available states for reference
       if (states.length > 0) {
         console.log('Available ticket states:');
         states.forEach((state) => {
+          const ticketTypesCount = state.ticket_types?.data?.length || 0;
           console.log(
-            `  - ${state.internal_label} (category: ${state.category}, id: ${state.id})`
+            `  - ${state.internal_label} (category: ${state.category}, id: ${state.id}, applies to ${ticketTypesCount} ticket type(s))`
           );
         });
       }
@@ -127,7 +128,11 @@ async function getTicketStateId(labelOrCategory, ticketTypeId = null) {
     applicableStates = states.filter(state => 
       state.ticket_types?.data?.some(type => String(type.id) === String(ticketTypeId))
     );
-    console.log(`  Filtered to ${applicableStates.length} states for ticket type ${ticketTypeId}`);
+    console.log(`  Filtered to ${applicableStates.length} states for ticket type ${ticketTypeId} (from ${states.length} total states)`);
+    
+    if (applicableStates.length > 0) {
+      console.log('  Applicable states:', applicableStates.map(s => s.internal_label).join(', '));
+    }
   }
 
   const normalizedInput = labelOrCategory.toLowerCase().trim();
