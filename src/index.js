@@ -28,7 +28,7 @@ if (!ASANA_TOKEN || !ASANA_WORKSPACE || !ASANA_PROJECT) {
 
 // Asana Custom Field GIDs - Will be automatically populated on server start
 const ASANA_CUSTOM_FIELDS = {
-  CASH_OUT_DATE_AND_TIME: null, // Date field in Intercom, Text in Asana (Singapore timezone)
+  CASH_OUT_DATE_AND_TIME: null, // Date field in Intercom, Text in Asana (GMT+6 timezone)
   CASH_OUT_SLIP: null, // File upload field
   E_WALLET: null, // Text field
   TRANSACTION_ID: null, // Text field
@@ -856,7 +856,7 @@ function isValidUrl(string) {
   }
 }
 
-// Helper function to format date for Asana as text in Singapore timezone
+// Helper function to format date for Asana as text in GMT+6 timezone
 // Format: M/D/YYYY, h:mm AM/PM
 function formatDateForAsana(dateValue) {
   if (!dateValue) return null;
@@ -886,9 +886,9 @@ function formatDateForAsana(dateValue) {
       return null;
     }
 
-    // Format to Singapore timezone: M/D/YYYY, h:mm AM/PM
+    // Format to GMT+6 timezone (Asia/Dhaka): M/D/YYYY, h:mm AM/PM
     const options = {
-      timeZone: 'Asia/Singapore',
+      timeZone: 'Asia/Dhaka',
       year: 'numeric',
       month: 'numeric',
       day: 'numeric',
