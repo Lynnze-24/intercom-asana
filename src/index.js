@@ -1182,10 +1182,11 @@ app.post('/intercom-webhook', async (req, res) => {
       }
 
       // Get Asana task ID directly from ticket attributes
-      const asanaTaskId = ticket?.ticket_attributes?.AsanaTaskID;
+      const asanaTaskId = ticket?.ticket_attributes?.['Asana Task ID'];
 
       if (!asanaTaskId) {
         console.log('  ⚠ No Asana task ID found for this ticket');
+        console.log('  Ticket attributes:', Object.keys(ticket?.ticket_attributes || {}).join(', '));
         console.log('  Skipping note sync - ticket not linked to Asana');
         return res.status(200).send();
       }
@@ -1288,10 +1289,11 @@ app.post('/intercom-webhook', async (req, res) => {
 
       // Get ticket details to find Asana task ID
       const ticket = await getTicket(ticketId);
-      const asanaTaskId = ticket?.ticket_attributes?.AsanaTaskID;
+      const asanaTaskId = ticket?.ticket_attributes?.['Asana Task ID'];
 
       if (!asanaTaskId) {
         console.log('  ⚠ No Asana task ID found for this ticket');
+        console.log('  Ticket attributes:', Object.keys(ticket?.ticket_attributes || {}).join(', '));
         console.log('  Skipping note sync - ticket not linked to Asana');
         return res.status(200).send();
       }
@@ -1402,10 +1404,11 @@ app.post('/initialize', async (req, res) => {
 
     if (ticketId) {
       const ticket = await getTicket(ticketId);
-      const asanaTaskId = ticket?.ticket_attributes?.AsanaTaskID;
+      const asanaTaskId = ticket?.ticket_attributes?.['Asana Task ID'];
 
       if (asanaTaskId) {
         // Ticket already has an Asana task
+        console.log('Existing Asana task found:', asanaTaskId);
         const components = [
           {
             type: 'text',
