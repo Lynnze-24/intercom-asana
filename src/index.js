@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import FormData from 'form-data';
+import whitelistStatus from './whitelistStatus.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -511,8 +512,8 @@ async function updateTicketAsanaStatus(ticketId, status) {
 }
 
 // Helper function to update Intercom ticket state ID based on label or category
-// Optionally accepts ticket type ID for filtering states
-async function updateTicketStateId(ticketId, labelOrCategory, ticketTypeId = null) {
+// Optionally accepts ticket type ID for filtering states and shouldClose to close ticket in same request
+async function updateTicketStateId(ticketId, labelOrCategory, ticketTypeId = null, shouldClose = false) {
   try {
     const stateId = await getTicketStateId(labelOrCategory, ticketTypeId);
 
@@ -540,8 +541,18 @@ async function updateTicketStateId(ticketId, labelOrCategory, ticketTypeId = nul
     }
 
     console.log(
-      `Updating ticket ${ticketId} ticket_state_id to: "${stateId}" (${labelOrCategory})`
+      `Updating ticket ${ticketId} ticket_state_id to: "${stateId}" (${labelOrCategory})${shouldClose ? ' and closing ticket' : ''}`
     );
+
+    // Build request body - combine state update and close in one request
+    const requestBody = {
+      ticket_state_id: stateId,
+    };
+
+    // Add open: false if should close
+    if (shouldClose) {
+      requestBody.open = false;
+    }
 
     const response = await fetch(
       `https://api.intercom.io/tickets/${ticketId}`,
@@ -553,15 +564,13 @@ async function updateTicketStateId(ticketId, labelOrCategory, ticketTypeId = nul
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
-        body: JSON.stringify({
-          ticket_state_id: stateId,
-        }),
+        body: JSON.stringify(requestBody),
       }
     );
 
     if (response.ok) {
       console.log(
-        `✓ Successfully updated ticket_state_id to "${stateId}" (${labelOrCategory})`
+        `✓ Successfully updated ticket_state_id to "${stateId}" (${labelOrCategory})${shouldClose ? ' and closed ticket' : ''}`
       );
       return true;
     } else {
@@ -752,6 +761,55 @@ async function getAsanaCustomFields() {
     return null;
   } catch (error) {
     console.error('Error fetching custom fields:', error);
+    return null;
+  }
+}
+
+// Helper function to get sections from a project
+async function getAsanaSections() {
+  try {
+    const response = await fetch(
+      `https://app.asana.com/api/1.0/projects/${ASANA_PROJECT}/sections`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${ASANA_TOKEN}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.data;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error fetching sections:', error);
+    return null;
+  }
+}
+
+// Helper function to get section ID by name
+async function getAsanaSectionId(sectionName) {
+  try {
+    const sections = await getAsanaSections();
+    if (!sections || sections.length === 0) {
+      console.warn('⚠ No sections found in Asana project');
+      return null;
+    }
+
+    const section = sections.find(s => s.name === sectionName);
+    if (section) {
+      console.log(`✓ Found section "${sectionName}" with ID: ${section.gid}`);
+      return section.gid;
+    } else {
+      console.warn(`⚠ Section "${sectionName}" not found in project`);
+      console.warn('Available sections:', sections.map(s => s.name).join(', '));
+      return null;
+    }
+  } catch (error) {
+    console.error('Error getting section ID:', error);
     return null;
   }
 }
@@ -1747,13 +1805,35 @@ Contact Information:
         );
       }
 
+      // Get the section ID for "CS Inquiry"
+      console.log('Fetching section ID for "CS Inquiry"...');
+      const csInquirySectionId = await getAsanaSectionId('CS Inquiry');
+
+      // Create task name from Reference Number or default to #Unknown
+      const referenceNumber = ticketAttrs['Reference Number'];
+      const taskName = referenceNumber ? `#${referenceNumber}` : '#Unknown';
+      console.log(`Task name: ${taskName} (Reference Number: ${referenceNumber || 'not found'})`);
+
       // Create task payload
       const taskPayload = {
         workspace: ASANA_WORKSPACE,
         projects: [ASANA_PROJECT],
-        name: contactName,
+        name: taskName,
         notes: taskNotes,
       };
+
+      // Add task to "CS Inquiry" section if found
+      if (csInquirySectionId) {
+        taskPayload.memberships = [
+          {
+            project: ASANA_PROJECT,
+            section: csInquirySectionId,
+          },
+        ];
+        console.log(`✓ Task will be created in "CS Inquiry" section (${csInquirySectionId})`);
+      } else {
+        console.warn('⚠ CS Inquiry section not found, task will be created in default section');
+      }
 
       // Only add custom_fields if we have any configured
       if (Object.keys(customFields).length > 0) {
@@ -2290,13 +2370,28 @@ app.post('/asana-webhook-prod', async (req, res) => {
 
         // Update Intercom ticket's Ticket Status if it changed
         if (ticketStatus) {
+          // Check if the new status is NOT in whitelist and ticket is open
+          const isWhitelisted = whitelistStatus.includes(ticketStatus);
+          const isTicketOpen = ticket?.open === true;
+          const shouldCloseTicket = !isWhitelisted && isTicketOpen;
+          
+          console.log(`  Status "${ticketStatus}" whitelisted: ${isWhitelisted}`);
+          console.log(`  Ticket open: ${isTicketOpen}`);
+          
+          if (shouldCloseTicket) {
+            console.log('  → Status not whitelisted and ticket is open, will close ticket in same request');
+          }
+          
+          // Update ticket state (and close if needed) in a single API call
           const stateUpdateResult = await updateTicketStateId(
             ticketId,
             ticketStatus,
-            ticketTypeId // Pass ticket type ID for filtering
+            ticketTypeId, // Pass ticket type ID for filtering
+            shouldCloseTicket // Pass flag to close ticket in same request
           );
+          
           if (stateUpdateResult) {
-            console.log('  ✓ Successfully updated Intercom ticket state ID');
+            console.log('  ✓ Successfully updated Intercom ticket');
           } else {
             console.log(
               "  ℹ Could not match ticket status to a state ID (this is normal if status doesn't match state labels)"
