@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import FormData from 'form-data';
 import whitelistStatus from './whitelistStatus.js';
+import projects from './projects.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -178,7 +179,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 /*
   This object defines the canvas that will display when your app initializes.
-  It includes a button to create an Asana task for the contact.
+  It includes a dropdown to select the project and a button to create an Asana task.
   
   More information on these can be found in the reference docs.
   Canvas docs: https://developers.intercom.com/docs/references/canvas-kit/responseobjects/canvas/
@@ -198,13 +199,29 @@ const initialCanvas = {
         {
           type: 'text',
           id: 'description',
-          text: 'Create Asana Task for Ticket',
+          text: 'Select Project and Create Asana Task',
           align: 'center',
           style: 'muted',
         },
         {
           type: 'spacer',
           id: 'spacer_1',
+          size: 's',
+        },
+        {
+          type: 'dropdown',
+          id: 'project_dropdown',
+          label: 'Select Asana Project',
+          value: projects[0].id, // Default to first project
+          options: projects.map(project => ({
+            type: 'option',
+            id: project.id,
+            text: project.name,
+          })),
+        },
+        {
+          type: 'spacer',
+          id: 'spacer_2',
           size: 's',
         },
         {
@@ -741,10 +758,10 @@ async function getAsanaEnumOptionId(fieldGid, optionName) {
 }
 
 // Helper function to get custom field settings for a project
-async function getAsanaCustomFields() {
+async function getAsanaCustomFields(projectId = ASANA_PROJECT) {
   try {
     const response = await fetch(
-      `https://app.asana.com/api/1.0/projects/${ASANA_PROJECT}/custom_field_settings`,
+      `https://app.asana.com/api/1.0/projects/${projectId}/custom_field_settings`,
       {
         method: 'GET',
         headers: {
@@ -766,10 +783,10 @@ async function getAsanaCustomFields() {
 }
 
 // Helper function to get sections from a project
-async function getAsanaSections() {
+async function getAsanaSections(projectId = ASANA_PROJECT) {
   try {
     const response = await fetch(
-      `https://app.asana.com/api/1.0/projects/${ASANA_PROJECT}/sections`,
+      `https://app.asana.com/api/1.0/projects/${projectId}/sections`,
       {
         method: 'GET',
         headers: {
@@ -791,9 +808,9 @@ async function getAsanaSections() {
 }
 
 // Helper function to get section ID by name
-async function getAsanaSectionId(sectionName) {
+async function getAsanaSectionId(sectionName, projectId = ASANA_PROJECT) {
   try {
-    const sections = await getAsanaSections();
+    const sections = await getAsanaSections(projectId);
     if (!sections || sections.length === 0) {
       console.warn('⚠ No sections found in Asana project');
       return null;
@@ -1518,8 +1535,12 @@ app.post('/submit', async (req, res) => {
   const conversationId = req.body.conversation?.id;
   const ticketId = req.body.conversation?.ticket?.id;
   
+  // Get selected project ID from dropdown (or fallback to env variable)
+  const selectedProjectId = req.body.input_values?.project_dropdown || ASANA_PROJECT;
+  
   console.log('Extracted conversation ID:', conversationId);
   console.log('Extracted ticket ID:', ticketId);
+  console.log('Selected project ID:', selectedProjectId);
   console.log('==================================\n');
 
   // Check if this conversation already has an Asana task (only for submit_button)
@@ -1546,7 +1567,7 @@ app.post('/submit', async (req, res) => {
 
       const [ticket, asanaCustomFieldSettings, contactNameFromApi] = await Promise.all([
         getTicket(ticketId),
-        getAsanaCustomFields(),
+        getAsanaCustomFields(selectedProjectId), // Pass selected project ID
         // Only fetch contact name if not in request body and we have a contact ID
         !contactNameFromBody && contactId ? getContactName(contactId) : Promise.resolve(null),
       ]);
@@ -1807,7 +1828,7 @@ Contact Information:
 
       // Get the section ID for "CS Inquiry"
       console.log('Fetching section ID for "CS Inquiry"...');
-      const csInquirySectionId = await getAsanaSectionId('CS Inquiry');
+      const csInquirySectionId = await getAsanaSectionId('CS Inquiry', selectedProjectId);
 
       // Create task name from Reference Number or default to #Unknown
       const referenceNumber = ticketAttrs['Reference Number'];
@@ -1817,7 +1838,7 @@ Contact Information:
       // Create task payload
       const taskPayload = {
         workspace: ASANA_WORKSPACE,
-        projects: [ASANA_PROJECT],
+        projects: [selectedProjectId], // Use selected project ID
         name: taskName,
         notes: taskNotes,
       };
@@ -1826,7 +1847,7 @@ Contact Information:
       if (csInquirySectionId) {
         taskPayload.memberships = [
           {
-            project: ASANA_PROJECT,
+            project: selectedProjectId, // Use selected project ID
             section: csInquirySectionId,
           },
         ];
@@ -1982,14 +2003,14 @@ Contact Information:
           {
             type: 'text',
             id: 'task_name',
-            text: `📋 ${contactName}`,
+            text: `📋 ${taskName}`,
             align: 'center',
             style: 'paragraph',
           },
           {
             type: 'text',
             id: 'task_id',
-            text: `ID: ${asanaTaskId}`,
+            text: `Task ID: ${asanaTaskId}`,
             align: 'center',
             style: 'muted',
           },
