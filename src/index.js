@@ -170,9 +170,9 @@ const asanaTaskToConversation = new Map();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// Middleware - increase limit for Intercom canvas payloads (default 100kb is too small)
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
