@@ -1578,10 +1578,10 @@ app.post('/submit', async (req, res) => {
       console.log('Contact name result:', contactNameFromApi || 'Not fetched');
 
       // Ensure custom fields are initialized (pass already-fetched settings to avoid refetch)
-      if (!customFieldsCache) {
+      // if (!customFieldsCache) {
         console.log('Custom fields not initialized, initializing now...');
         await initializeCustomFieldMappings(asanaCustomFieldSettings);
-      }
+      // }
 
       // Determine contact name
       const contactName = contactNameFromBody || contactNameFromApi || 'Unknown Contact';
