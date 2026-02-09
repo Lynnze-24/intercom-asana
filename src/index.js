@@ -2270,19 +2270,18 @@ Contact Information:
 
       console.log(`\nUpload complete: ${successCount}/${fileUrls.length} files uploaded to Asana`);
 
-      // Post files as a note to Intercom conversation
-      // Note: Intercom API cannot upload files to ticket attributes (API limitation)
-      // Instead, we post file links as a note with attachments
+      // Post files as a note to Intercom conversation with actual attachments
       console.log('\n===== POSTING FILES TO INTERCOM CONVERSATION =====');
       
-      if (uploadedFiles.length > 0) {
-        // Format file links for the note
-        const fileLinksText = uploadedFiles.map((f, i) => `${i + 1}. ${f.name}: ${f.url}`).join('\n');
+      if (successCount > 0) {
+        // Extract file URLs for attachment_urls parameter
+        const attachmentUrls = uploadedFiles.map(f => f.url);
         
         // Create note body with prefix to prevent webhook loop
-        const noteBody = `[File Sync from Intercom to Asana]\n\n${successCount} file(s) synced to Asana:\n\n${fileLinksText}`;
+        const noteBody = `[File Sync from Intercom to Asana]\n\n${successCount} file(s) synced to Asana and attached below.`;
         
-        console.log('Posting note to conversation:', conversationId);
+        console.log('Posting note with attachments to conversation:', conversationId);
+        console.log('Attachment URLs:', attachmentUrls);
         
         const noteResponse = await fetch(
           `https://api.intercom.io/conversations/${conversationId}/reply`,
@@ -2298,12 +2297,13 @@ Contact Information:
               type: 'admin',
               admin_id: INTERCOM_ADMIN_ID,
               body: noteBody,
+              attachment_urls: attachmentUrls,
             }),
           }
         );
 
         if (noteResponse.ok) {
-          console.log('✓ Successfully posted file links as note to Intercom conversation');
+          console.log('✓ Successfully posted note with file attachments to Intercom conversation');
         } else {
           const errorData = await noteResponse.json();
           console.error('✗ Error posting note to Intercom:', errorData);
@@ -2362,7 +2362,7 @@ Contact Information:
         {
           type: 'text',
           id: 'note_status',
-          text: '💬 File links posted as note',
+          text: '💬 Files attached to conversation',
           align: 'center',
           style: 'muted',
         },
@@ -2599,27 +2599,25 @@ app.post('/asana-webhook-prod', async (req, res) => {
                       }
                       console.log(`  Existing Shared Files count: ${existingSharedFiles.length}`);
 
-                      // Post attachments as a note to Intercom conversation
-                      const newFileLinks = [];
+                      // Post attachments as a note to Intercom conversation with actual files
+                      const attachmentUrls = [];
                       for (const attachment of attachments) {
                         // Asana attachments in previews have download_url
                         const attachmentUrl = attachment.download_url || attachment.url;
                         const attachmentName = attachment.name || attachment.fallback || 'attachment';
                         
                         if (attachmentUrl) {
-                          newFileLinks.push(`${attachmentName}: ${attachmentUrl}`);
+                          attachmentUrls.push(attachmentUrl);
                           console.log(`    ✓ ${attachmentName} (${attachmentUrl})`);
                         }
                       }
 
-                      if (newFileLinks.length > 0) {
-                        // Format file links for the note
-                        const fileLinksText = newFileLinks.map((link, i) => `${i + 1}. ${link}`).join('\n');
-                        
+                      if (attachmentUrls.length > 0) {
                         // Create note body with prefix to prevent webhook loop
-                        const attachmentNoteBody = `[Asana File Sync]\n\n${newFileLinks.length} attachment(s) from Asana comment:\n\n${fileLinksText}`;
+                        const attachmentNoteBody = `[Asana File Sync]\n\n${attachmentUrls.length} attachment(s) from Asana comment attached below.`;
                         
                         console.log('  Posting attachments as note to conversation...');
+                        console.log('  Attachment URLs:', attachmentUrls);
                         
                         const attachmentNoteResponse = await fetch(
                           `https://api.intercom.io/conversations/${conversationId}/reply`,
@@ -2635,12 +2633,13 @@ app.post('/asana-webhook-prod', async (req, res) => {
                               type: 'admin',
                               admin_id: INTERCOM_ADMIN_ID,
                               body: attachmentNoteBody,
+                              attachment_urls: attachmentUrls,
                             }),
                           }
                         );
 
                         if (attachmentNoteResponse.ok) {
-                          console.log('  ✓ Successfully posted attachments as note to Intercom conversation');
+                          console.log('  ✓ Successfully posted note with file attachments to Intercom conversation');
                         } else {
                           const attachmentError = await attachmentNoteResponse.json();
                           console.error('  ✗ Error posting attachment note to Intercom:', attachmentError);
