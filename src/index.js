@@ -2624,37 +2624,70 @@ app.post('/asana-webhook-prod', async (req, res) => {
                       }
 
                       if (attachmentUrls.length > 0) {
-                        // Create note body with prefix to prevent webhook loop
-                        const attachmentNoteBody = `[Asana File Sync]\n\n${attachmentUrls.length} attachment(s) from Asana comment attached below.`;
+                        console.log('  Downloading and uploading attachments to Intercom...');
                         
-                        console.log('  Posting attachments as note to conversation...');
-                        console.log('  Attachment URLs:', attachmentUrls);
-                        
-                        const attachmentNoteResponse = await fetch(
-                          `https://api.intercom.io/conversations/${conversationId}/reply`,
-                          {
-                            method: 'POST',
-                            headers: {
-                              Authorization: `Bearer ${INTERCOM_TOKEN}`,
-                              'Content-Type': 'application/json',
-                              Accept: 'application/json',
-                            },
-                            body: JSON.stringify({
-                              message_type: 'note',
-                              type: 'admin',
-                              admin_id: INTERCOM_ADMIN_ID,
-                              body: attachmentNoteBody,
-                              attachment_urls: attachmentUrls,
-                            }),
+                        // Download files from Asana and upload to Intercom
+                        const uploadedAttachmentUrls = [];
+                        for (let i = 0; i < attachmentUrls.length; i++) {
+                          const attachmentUrl = attachmentUrls[i];
+                          const attachmentName = attachments[i]?.name || `attachment_${i + 1}`;
+                          
+                          try {
+                            console.log(`    Downloading ${attachmentName}...`);
+                            
+                            // Download file from Asana (requires auth)
+                            const fileResponse = await fetch(attachmentUrl, {
+                              headers: {
+                                Authorization: `Bearer ${ASANA_TOKEN}`,
+                              },
+                            });
+                            
+                            if (!fileResponse.ok) {
+                              console.error(`    ✗ Failed to download ${attachmentName}`);
+                              continue;
+                            }
+                            
+                            const fileBuffer = await fileResponse.buffer();
+                            const contentType = fileResponse.headers.get('content-type') || 'application/octet-stream';
+                            
+                            console.log(`    ✓ Downloaded ${attachmentName} (${fileBuffer.length} bytes)`);
+                            console.log(`    Uploading to Intercom...`);
+                            
+                            // Upload file to Intercom using multipart/form-data
+                            const formData = new FormData();
+                            formData.append('message_type', 'note');
+                            formData.append('type', 'admin');
+                            formData.append('admin_id', INTERCOM_ADMIN_ID);
+                            formData.append('body', `[Asana File Sync]\n\n${attachmentName}`);
+                            formData.append('attachment_files', fileBuffer, {
+                              filename: attachmentName,
+                              contentType: contentType,
+                            });
+                            
+                            const uploadResponse = await fetch(
+                              `https://api.intercom.io/conversations/${conversationId}/reply`,
+                              {
+                                method: 'POST',
+                                headers: {
+                                  Authorization: `Bearer ${INTERCOM_TOKEN}`,
+                                  ...formData.getHeaders(),
+                                },
+                                body: formData,
+                              }
+                            );
+                            
+                            if (uploadResponse.ok) {
+                              console.log(`    ✓ Successfully uploaded ${attachmentName} to Intercom`);
+                            } else {
+                              const uploadError = await uploadResponse.json();
+                              console.error(`    ✗ Error uploading ${attachmentName}:`, uploadError);
+                            }
+                          } catch (error) {
+                            console.error(`    ✗ Error processing ${attachmentName}:`, error.message);
                           }
-                        );
-
-                        if (attachmentNoteResponse.ok) {
-                          console.log('  ✓ Successfully posted note with file attachments to Intercom conversation');
-                        } else {
-                          const attachmentError = await attachmentNoteResponse.json();
-                          console.error('  ✗ Error posting attachment note to Intercom:', attachmentError);
                         }
+                        
+                        console.log('  ✓ Finished processing attachments');
                       }
                     }
                   } else {
