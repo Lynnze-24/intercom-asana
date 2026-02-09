@@ -2526,10 +2526,21 @@ app.post('/asana-webhook-prod', async (req, res) => {
               const conversationId = result.conversationId;
               console.log('  Found conversation ID:', conversationId);
 
+              // Clean comment text by removing Asana asset URLs (they'll be posted as attachments separately)
+              let cleanCommentText = story.text;
+              
+              // Remove Asana asset URLs from text (e.g., https://app.asana.com/app/asana/-/get_asset?asset_id=...)
+              cleanCommentText = cleanCommentText.replace(/https?:\/\/app\.asana\.com\/app\/asana\/-\/get_asset\?asset_id=[^\s]*/g, '').trim();
+              
+              // If text is empty after removing URLs, use a default message
+              if (!cleanCommentText) {
+                cleanCommentText = '(attachment only)';
+              }
+
               // Post comment to Intercom conversation as a private note
               const commentBody = `[Asana Comment by ${
                 story.created_by?.name || 'Unknown'
-              }]\n${story.text}`;
+              }]\n${cleanCommentText}`;
 
               const intercomResponse = await fetch(
                 `https://api.intercom.io/conversations/${conversationId}/reply`,
