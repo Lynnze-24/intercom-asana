@@ -1302,9 +1302,11 @@ app.post('/intercom-webhook', async (req, res) => {
         .trim();
 
       // Check if this note was created by the integration (to prevent loop)
-      if (plainTextBody.startsWith('[Asana Comment by')) {
+      if (plainTextBody.startsWith('[Asana Comment by') || 
+          plainTextBody.startsWith('[Asana File Sync]') ||
+          plainTextBody.startsWith('[File Sync from Intercom to Asana]')) {
         console.log(
-          '  ℹ Skipping - note was synced from Asana (preventing loop)'
+          '  ℹ Skipping - note was synced from Asana or file sync (preventing loop)'
         );
         return res.status(200).send();
       }
@@ -1417,9 +1419,11 @@ app.post('/intercom-webhook', async (req, res) => {
         .trim();
 
       // Check if this note was created by the integration (to prevent loop)
-      if (plainTextBody.startsWith('[Asana Comment by')) {
+      if (plainTextBody.startsWith('[Asana Comment by') || 
+          plainTextBody.startsWith('[Asana File Sync]') ||
+          plainTextBody.startsWith('[File Sync from Intercom to Asana]')) {
         console.log(
-          '  ℹ Skipping - note was synced from Asana (preventing loop)'
+          '  ℹ Skipping - note was synced from Asana or file sync (preventing loop)'
         );
         return res.status(200).send();
       }
@@ -2209,6 +2213,19 @@ Contact Information:
                   align: 'center',
                   style: 'muted',
                 },
+                {
+                  type: 'divider',
+                  id: 'divider_no_files',
+                },
+                {
+                  type: 'button',
+                  label: 'Sync Files',
+                  style: 'secondary',
+                  id: 'sync_files_button',
+                  action: {
+                    type: 'submit',
+                  },
+                },
               ],
             },
           },
@@ -2253,48 +2270,46 @@ Contact Information:
 
       console.log(`\nUpload complete: ${successCount}/${fileUrls.length} files uploaded to Asana`);
 
-      // Update "Shared Files" field in Intercom
-      console.log('\n===== UPDATING SHARED FILES IN INTERCOM =====');
+      // Post files as a note to Intercom conversation
+      // Note: Intercom API cannot upload files to ticket attributes (API limitation)
+      // Instead, we post file links as a note with attachments
+      console.log('\n===== POSTING FILES TO INTERCOM CONVERSATION =====');
       
-      // Get existing files from "Shared Files" field
-      let existingSharedFiles = ticket.ticket_attributes?.['Shared Files'] || [];
-      if (!Array.isArray(existingSharedFiles)) {
-        existingSharedFiles = [];
-      }
-      console.log(`Existing "Shared Files" count: ${existingSharedFiles.length}`);
-
-      // Combine with uploaded files (prioritize new files)
-      const combinedFiles = [...uploadedFiles, ...existingSharedFiles];
-      
-      // Limit to 10 files (Intercom limit)
-      const updatedSharedFiles = combinedFiles.slice(0, 10);
-      console.log(`Updated "Shared Files" count: ${updatedSharedFiles.length} (limit: 10)`);
-
-      // Update Intercom ticket's "Shared Files" field
-      console.log('Updating Intercom ticket with shared files...');
-      const updateResponse = await fetch(
-        `https://api.intercom.io/tickets/${ticketId}`,
-        {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${INTERCOM_TOKEN}`,
-            'Intercom-Version': '2.14',
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          body: JSON.stringify({
-            ticket_attributes: {
-              'Shared Files': updatedSharedFiles,
+      if (uploadedFiles.length > 0) {
+        // Format file links for the note
+        const fileLinksText = uploadedFiles.map((f, i) => `${i + 1}. ${f.name}: ${f.url}`).join('\n');
+        
+        // Create note body with prefix to prevent webhook loop
+        const noteBody = `[File Sync from Intercom to Asana]\n\n${successCount} file(s) synced to Asana:\n\n${fileLinksText}`;
+        
+        console.log('Posting note to conversation:', conversationId);
+        
+        const noteResponse = await fetch(
+          `https://api.intercom.io/conversations/${conversationId}/reply`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${INTERCOM_TOKEN}`,
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
             },
-          }),
-        }
-      );
+            body: JSON.stringify({
+              message_type: 'note',
+              type: 'admin',
+              admin_id: INTERCOM_ADMIN_ID,
+              body: noteBody,
+            }),
+          }
+        );
 
-      if (updateResponse.ok) {
-        console.log('✓ Successfully updated "Shared Files" field in Intercom');
+        if (noteResponse.ok) {
+          console.log('✓ Successfully posted file links as note to Intercom conversation');
+        } else {
+          const errorData = await noteResponse.json();
+          console.error('✗ Error posting note to Intercom:', errorData);
+        }
       } else {
-        const errorData = await updateResponse.json();
-        console.error('✗ Error updating "Shared Files" field:', errorData);
+        console.log('No files to post to conversation');
       }
 
       // Clear the "Intercom to Asana" field after successful sync
@@ -2324,7 +2339,7 @@ Contact Information:
         console.error('✗ Error clearing "Intercom to Asana" field:', clearErrorData);
       }
 
-      // Return success canvas
+      // Return success canvas with Sync button for repeated syncs
       const components = [
         {
           type: 'text',
@@ -2346,23 +2361,25 @@ Contact Information:
         },
         {
           type: 'text',
-          id: 'shared_files_status',
-          text: `📁 ${updatedSharedFiles.length} file(s) in Shared Files`,
+          id: 'note_status',
+          text: '💬 File links posted as note',
           align: 'center',
           style: 'muted',
         },
+        {
+          type: 'divider',
+          id: 'divider_sync_again',
+        },
+        {
+          type: 'button',
+          label: 'Sync Files',
+          style: 'secondary',
+          id: 'sync_files_button',
+          action: {
+            type: 'submit',
+          },
+        },
       ];
-
-      // Add warning if files were truncated
-      if (combinedFiles.length > 10) {
-        components.push({
-          type: 'text',
-          id: 'truncate_warning',
-          text: `⚠️ ${combinedFiles.length - 10} older file(s) removed (10 file limit)`,
-          align: 'center',
-          style: 'muted',
-        });
-      }
 
       const syncSuccessCanvas = {
         canvas: {
@@ -2398,6 +2415,19 @@ Contact Information:
                 text: error.message || 'An unexpected error occurred',
                 align: 'center',
                 style: 'paragraph',
+              },
+              {
+                type: 'divider',
+                id: 'divider_error_retry',
+              },
+              {
+                type: 'button',
+                label: 'Sync Files',
+                style: 'secondary',
+                id: 'sync_files_button',
+                action: {
+                  type: 'submit',
+                },
               },
             ],
           },
@@ -2569,58 +2599,51 @@ app.post('/asana-webhook-prod', async (req, res) => {
                       }
                       console.log(`  Existing Shared Files count: ${existingSharedFiles.length}`);
 
-                      // Prepare new files to add
-                      const newFiles = [];
+                      // Post attachments as a note to Intercom conversation
+                      const newFileLinks = [];
                       for (const attachment of attachments) {
                         // Asana attachments in previews have download_url
                         const attachmentUrl = attachment.download_url || attachment.url;
                         const attachmentName = attachment.name || attachment.fallback || 'attachment';
                         
                         if (attachmentUrl) {
-                          newFiles.push({
-                            url: attachmentUrl,
-                            name: attachmentName,
-                            content_type: attachment.resource_subtype || 'application/octet-stream',
-                          });
+                          newFileLinks.push(`${attachmentName}: ${attachmentUrl}`);
                           console.log(`    ✓ ${attachmentName} (${attachmentUrl})`);
                         }
                       }
 
-                      if (newFiles.length > 0) {
-                        // Combine with existing files (prioritize new files)
-                        const combinedFiles = [...newFiles, ...existingSharedFiles];
+                      if (newFileLinks.length > 0) {
+                        // Format file links for the note
+                        const fileLinksText = newFileLinks.map((link, i) => `${i + 1}. ${link}`).join('\n');
                         
-                        // Limit to 10 files (Intercom limit)
-                        const updatedSharedFiles = combinedFiles.slice(0, 10);
-                        console.log(`  Updated Shared Files count: ${updatedSharedFiles.length} (limit: 10)`);
-
-                        // Update Intercom ticket's "Shared Files" field
-                        const updateSharedFilesResponse = await fetch(
-                          `https://api.intercom.io/tickets/${ticketId}`,
+                        // Create note body with prefix to prevent webhook loop
+                        const attachmentNoteBody = `[Asana File Sync]\n\n${newFileLinks.length} attachment(s) from Asana comment:\n\n${fileLinksText}`;
+                        
+                        console.log('  Posting attachments as note to conversation...');
+                        
+                        const attachmentNoteResponse = await fetch(
+                          `https://api.intercom.io/conversations/${conversationId}/reply`,
                           {
-                            method: 'PUT',
+                            method: 'POST',
                             headers: {
                               Authorization: `Bearer ${INTERCOM_TOKEN}`,
-                              'Intercom-Version': '2.14',
                               'Content-Type': 'application/json',
                               Accept: 'application/json',
                             },
                             body: JSON.stringify({
-                              ticket_attributes: {
-                                'Shared Files': updatedSharedFiles,
-                              },
+                              message_type: 'note',
+                              type: 'admin',
+                              admin_id: INTERCOM_ADMIN_ID,
+                              body: attachmentNoteBody,
                             }),
                           }
                         );
 
-                        if (updateSharedFilesResponse.ok) {
-                          console.log('  ✓ Successfully updated Shared Files with attachments');
-                          if (combinedFiles.length > 10) {
-                            console.log(`  ⚠ Removed ${combinedFiles.length - 10} older file(s) due to 10-file limit`);
-                          }
+                        if (attachmentNoteResponse.ok) {
+                          console.log('  ✓ Successfully posted attachments as note to Intercom conversation');
                         } else {
-                          const updateError = await updateSharedFilesResponse.json();
-                          console.error('  ✗ Error updating Shared Files:', updateError);
+                          const attachmentError = await attachmentNoteResponse.json();
+                          console.error('  ✗ Error posting attachment note to Intercom:', attachmentError);
                         }
                       }
                     }
