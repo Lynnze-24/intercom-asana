@@ -2526,11 +2526,12 @@ app.post('/asana-webhook-prod', async (req, res) => {
               const conversationId = result.conversationId;
               console.log('  Found conversation ID:', conversationId);
 
-              // Clean comment text by removing Asana asset URLs (they'll be posted as attachments separately)
-              let cleanCommentText = story.text;
+              // Extract Asana asset URLs from comment text before cleaning
+              const asanaAssetUrlRegex = /https?:\/\/app\.asana\.com\/app\/asana\/-\/get_asset\?asset_id=[^\s]*/g;
+              const assetUrls = story.text.match(asanaAssetUrlRegex) || [];
               
-              // Remove Asana asset URLs from text (e.g., https://app.asana.com/app/asana/-/get_asset?asset_id=...)
-              cleanCommentText = cleanCommentText.replace(/https?:\/\/app\.asana\.com\/app\/asana\/-\/get_asset\?asset_id=[^\s]*/g, '').trim();
+              // Clean comment text by removing Asana asset URLs (they'll be posted as attachments separately)
+              let cleanCommentText = story.text.replace(asanaAssetUrlRegex, '').trim();
               
               // If text is empty after removing URLs, use a default message
               if (!cleanCommentText) {
@@ -2572,132 +2573,81 @@ app.post('/asana-webhook-prod', async (req, res) => {
                 );
               }
 
-              // Check if comment has attachments and sync them to Shared Files
-              if (story.previews && story.previews.length > 0) {
-                console.log(`  📎 Comment has ${story.previews.length} attachment(s)`);
+              // Download and upload Asana attachments if found in comment text
+              if (assetUrls.length > 0) {
+                console.log(`  📎 Found ${assetUrls.length} attachment(s) in comment`);
+                console.log('  Downloading and uploading attachments to Intercom...');
                 
-                // Get conversation to find ticket ID
-                const conversation = await getConversation(conversationId);
-                const ticketId = conversation?.ticket?.id;
-
-                if (ticketId) {
-                  console.log('  Ticket ID:', ticketId);
+                for (let i = 0; i < assetUrls.length; i++) {
+                  const assetUrl = assetUrls[i];
+                  const attachmentName = `attachment_${i + 1}`;
                   
-                  // Fetch full story with attachments
-                  const fullStoryResponse = await fetch(
-                    `https://app.asana.com/api/1.0/stories/${storyId}?opt_fields=previews`,
-                    {
-                      method: 'GET',
+                  try {
+                    console.log(`    Downloading ${attachmentName}...`);
+                    
+                    // Download file from Asana (requires auth)
+                    const fileResponse = await fetch(assetUrl, {
                       headers: {
                         Authorization: `Bearer ${ASANA_TOKEN}`,
-                        Accept: 'application/json',
                       },
-                    }
-                  );
-
-                  if (fullStoryResponse.ok) {
-                    const fullStoryData = await fullStoryResponse.json();
-                    const attachments = fullStoryData.data?.previews || [];
+                    });
                     
-                    if (attachments.length > 0) {
-                      console.log(`  Processing ${attachments.length} attachment(s)...`);
-                      
-                      // Fetch ticket to get existing Shared Files
-                      const ticket = await getTicket(ticketId);
-                      let existingSharedFiles = ticket?.ticket_attributes?.['Shared Files'] || [];
-                      if (!Array.isArray(existingSharedFiles)) {
-                        existingSharedFiles = [];
-                      }
-                      console.log(`  Existing Shared Files count: ${existingSharedFiles.length}`);
-
-                      // Post attachments as a note to Intercom conversation with actual files
-                      const attachmentUrls = [];
-                      for (const attachment of attachments) {
-                        // Asana attachments in previews have download_url
-                        const attachmentUrl = attachment.download_url || attachment.url;
-                        const attachmentName = attachment.name || attachment.fallback || 'attachment';
-                        
-                        if (attachmentUrl) {
-                          attachmentUrls.push(attachmentUrl);
-                          console.log(`    ✓ ${attachmentName} (${attachmentUrl})`);
-                        }
-                      }
-
-                      if (attachmentUrls.length > 0) {
-                        console.log('  Downloading and uploading attachments to Intercom...');
-                        
-                        // Download files from Asana and upload to Intercom
-                        const uploadedAttachmentUrls = [];
-                        for (let i = 0; i < attachmentUrls.length; i++) {
-                          const attachmentUrl = attachmentUrls[i];
-                          const attachmentName = attachments[i]?.name || `attachment_${i + 1}`;
-                          
-                          try {
-                            console.log(`    Downloading ${attachmentName}...`);
-                            
-                            // Download file from Asana (requires auth)
-                            const fileResponse = await fetch(attachmentUrl, {
-                              headers: {
-                                Authorization: `Bearer ${ASANA_TOKEN}`,
-                              },
-                            });
-                            
-                            if (!fileResponse.ok) {
-                              console.error(`    ✗ Failed to download ${attachmentName}`);
-                              continue;
-                            }
-                            
-                            const fileBuffer = await fileResponse.buffer();
-                            const contentType = fileResponse.headers.get('content-type') || 'application/octet-stream';
-                            
-                            console.log(`    ✓ Downloaded ${attachmentName} (${fileBuffer.length} bytes)`);
-                            console.log(`    Uploading to Intercom...`);
-                            
-                            // Upload file to Intercom using multipart/form-data
-                            const formData = new FormData();
-                            formData.append('message_type', 'note');
-                            formData.append('type', 'admin');
-                            formData.append('admin_id', INTERCOM_ADMIN_ID);
-                            formData.append('body', `[Asana File Sync]\n\n${attachmentName}`);
-                            formData.append('attachment_files', fileBuffer, {
-                              filename: attachmentName,
-                              contentType: contentType,
-                            });
-                            
-                            const uploadResponse = await fetch(
-                              `https://api.intercom.io/conversations/${conversationId}/reply`,
-                              {
-                                method: 'POST',
-                                headers: {
-                                  Authorization: `Bearer ${INTERCOM_TOKEN}`,
-                                  ...formData.getHeaders(),
-                                },
-                                body: formData,
-                              }
-                            );
-                            
-                            if (uploadResponse.ok) {
-                              console.log(`    ✓ Successfully uploaded ${attachmentName} to Intercom`);
-                            } else {
-                              const uploadError = await uploadResponse.json();
-                              console.error(`    ✗ Error uploading ${attachmentName}:`, uploadError);
-                            }
-                          } catch (error) {
-                            console.error(`    ✗ Error processing ${attachmentName}:`, error.message);
-                          }
-                        }
-                        
-                        console.log('  ✓ Finished processing attachments');
+                    if (!fileResponse.ok) {
+                      console.error(`    ✗ Failed to download ${attachmentName}`);
+                      continue;
+                    }
+                    
+                    const fileBuffer = await fileResponse.buffer();
+                    const contentType = fileResponse.headers.get('content-type') || 'application/octet-stream';
+                    
+                    // Extract filename from content-disposition header if available
+                    const contentDisposition = fileResponse.headers.get('content-disposition');
+                    let filename = attachmentName;
+                    if (contentDisposition) {
+                      const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                      if (filenameMatch && filenameMatch[1]) {
+                        filename = filenameMatch[1].replace(/['"]/g, '');
                       }
                     }
-                  } else {
-                    console.log('  ⚠ Could not fetch full story details with attachments');
+                    
+                    console.log(`    ✓ Downloaded ${filename} (${fileBuffer.length} bytes)`);
+                    console.log(`    Uploading to Intercom...`);
+                    
+                    // Upload file to Intercom using multipart/form-data
+                    const formData = new FormData();
+                    formData.append('message_type', 'note');
+                    formData.append('type', 'admin');
+                    formData.append('admin_id', INTERCOM_ADMIN_ID);
+                    formData.append('body', `[Asana File Sync]\n\n${filename}`);
+                    formData.append('attachment_files', fileBuffer, {
+                      filename: filename,
+                      contentType: contentType,
+                    });
+                    
+                    const uploadResponse = await fetch(
+                      `https://api.intercom.io/conversations/${conversationId}/reply`,
+                      {
+                        method: 'POST',
+                        headers: {
+                          Authorization: `Bearer ${INTERCOM_TOKEN}`,
+                          ...formData.getHeaders(),
+                        },
+                        body: formData,
+                      }
+                    );
+                    
+                    if (uploadResponse.ok) {
+                      console.log(`    ✓ Successfully uploaded ${filename} to Intercom`);
+                    } else {
+                      const uploadError = await uploadResponse.json();
+                      console.error(`    ✗ Error uploading ${filename}:`, uploadError);
+                    }
+                  } catch (error) {
+                    console.error(`    ✗ Error processing ${attachmentName}:`, error.message);
                   }
-                } else {
-                  console.log('  ⚠ No ticket ID found, cannot sync attachments');
                 }
-              } else {
-                console.log('  No attachments in comment');
+                
+                console.log('  ✓ Finished processing attachments');
               }
             } else {
               console.log(
