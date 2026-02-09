@@ -1504,6 +1504,19 @@ app.post('/initialize', async (req, res) => {
             align: 'center',
             style: 'paragraph',
           },
+          {
+            type: 'divider',
+            id: 'divider_init',
+          },
+          {
+            type: 'button',
+            label: 'Sync Files',
+            style: 'secondary',
+            id: 'sync_files_button',
+            action: {
+              type: 'submit',
+            },
+          },
         ];
 
         const completedCanvas = {
@@ -1617,6 +1630,19 @@ app.post('/submit', async (req, res) => {
             text: `Task ID: ${existingTaskId}`,
             align: 'center',
             style: 'paragraph',
+          },
+          {
+            type: 'divider',
+            id: 'divider_existing',
+          },
+          {
+            type: 'button',
+            label: 'Sync Files',
+            style: 'secondary',
+            id: 'sync_files_button',
+            action: {
+              type: 'submit',
+            },
           },
         ];
 
@@ -2018,6 +2044,15 @@ Contact Information:
             type: 'divider',
             id: 'divider_1',
           },
+          {
+            type: 'button',
+            label: 'Sync Files',
+            style: 'secondary',
+            id: 'sync_files_button',
+            action: {
+              type: 'submit',
+            },
+          },
         ];
 
         // Add attachment status if attachments were processed
@@ -2125,7 +2160,253 @@ Contact Information:
       };
       res.send(errorCanvas);
     }
-  } else {
+  } 
+  // Handle Sync Files button
+  else if (req.body.component_id === 'sync_files_button') {
+    try {
+      console.log('\n===== SYNC FILES BUTTON CLICKED =====');
+      console.log('Conversation ID:', conversationId);
+      console.log('Ticket ID:', ticketId);
+
+      if (!ticketId) {
+        throw new Error('No ticket found for this conversation');
+      }
+
+      // Fetch ticket to get Asana Task ID and files
+      const ticket = await getTicket(ticketId);
+      if (!ticket) {
+        throw new Error('Failed to fetch ticket details');
+      }
+
+      const asanaTaskId = ticket.ticket_attributes?.['Asana Task ID'];
+      if (!asanaTaskId) {
+        throw new Error('No Asana task linked to this ticket');
+      }
+
+      console.log('Asana Task ID:', asanaTaskId);
+
+      // Get files from "Intercom to Asana" field
+      const intercomToAsanaFiles = ticket.ticket_attributes?.['Intercom to Asana'];
+      console.log('Intercom to Asana field value:', intercomToAsanaFiles);
+
+      if (!intercomToAsanaFiles || (Array.isArray(intercomToAsanaFiles) && intercomToAsanaFiles.length === 0)) {
+        console.log('No files found in "Intercom to Asana" field');
+        const noFilesCanvas = {
+          canvas: {
+            content: {
+              components: [
+                {
+                  type: 'text',
+                  id: 'no_files',
+                  text: 'ℹ️ No Files to Sync',
+                  align: 'center',
+                  style: 'header',
+                },
+                {
+                  type: 'text',
+                  id: 'no_files_desc',
+                  text: 'The "Intercom to Asana" field is empty',
+                  align: 'center',
+                  style: 'muted',
+                },
+              ],
+            },
+          },
+        };
+        return res.send(noFilesCanvas);
+      }
+
+      // Extract file URLs
+      const fileUrls = extractAttachmentUrls(intercomToAsanaFiles, 'Intercom to Asana');
+      console.log(`Extracted ${fileUrls.length} file URL(s):`, fileUrls);
+
+      if (fileUrls.length === 0) {
+        throw new Error('No valid file URLs found in "Intercom to Asana" field');
+      }
+
+      // Upload files to Asana task
+      console.log('\n===== UPLOADING FILES TO ASANA =====');
+      let successCount = 0;
+      const uploadedFiles = [];
+
+      for (let i = 0; i < fileUrls.length; i++) {
+        const fileUrl = fileUrls[i];
+        console.log(`\nProcessing file ${i + 1}/${fileUrls.length}`);
+        console.log('File URL:', fileUrl);
+
+        try {
+          const permanentUrl = await uploadAttachmentToAsana(asanaTaskId, fileUrl);
+          if (permanentUrl) {
+            successCount++;
+            uploadedFiles.push({
+              url: fileUrl,
+              name: fileUrl.split('/').pop().split('?')[0] || `file_${i + 1}`,
+            });
+            console.log('✓ File uploaded successfully');
+          } else {
+            console.log('✗ File upload failed');
+          }
+        } catch (error) {
+          console.error('✗ Error uploading file:', error);
+        }
+      }
+
+      console.log(`\nUpload complete: ${successCount}/${fileUrls.length} files uploaded to Asana`);
+
+      // Update "Shared Files" field in Intercom
+      console.log('\n===== UPDATING SHARED FILES IN INTERCOM =====');
+      
+      // Get existing files from "Shared Files" field
+      let existingSharedFiles = ticket.ticket_attributes?.['Shared Files'] || [];
+      if (!Array.isArray(existingSharedFiles)) {
+        existingSharedFiles = [];
+      }
+      console.log(`Existing "Shared Files" count: ${existingSharedFiles.length}`);
+
+      // Combine with uploaded files (prioritize new files)
+      const combinedFiles = [...uploadedFiles, ...existingSharedFiles];
+      
+      // Limit to 10 files (Intercom limit)
+      const updatedSharedFiles = combinedFiles.slice(0, 10);
+      console.log(`Updated "Shared Files" count: ${updatedSharedFiles.length} (limit: 10)`);
+
+      // Update Intercom ticket's "Shared Files" field
+      console.log('Updating Intercom ticket with shared files...');
+      const updateResponse = await fetch(
+        `https://api.intercom.io/tickets/${ticketId}`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${INTERCOM_TOKEN}`,
+            'Intercom-Version': '2.14',
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            ticket_attributes: {
+              'Shared Files': updatedSharedFiles,
+            },
+          }),
+        }
+      );
+
+      if (updateResponse.ok) {
+        console.log('✓ Successfully updated "Shared Files" field in Intercom');
+      } else {
+        const errorData = await updateResponse.json();
+        console.error('✗ Error updating "Shared Files" field:', errorData);
+      }
+
+      // Clear the "Intercom to Asana" field after successful sync
+      console.log('\n===== CLEARING INTERCOM TO ASANA FIELD =====');
+      const clearResponse = await fetch(
+        `https://api.intercom.io/tickets/${ticketId}`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${INTERCOM_TOKEN}`,
+            'Intercom-Version': '2.14',
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            ticket_attributes: {
+              'Intercom to Asana': [],
+            },
+          }),
+        }
+      );
+
+      if (clearResponse.ok) {
+        console.log('✓ Successfully cleared "Intercom to Asana" field');
+      } else {
+        const clearErrorData = await clearResponse.json();
+        console.error('✗ Error clearing "Intercom to Asana" field:', clearErrorData);
+      }
+
+      // Return success canvas
+      const components = [
+        {
+          type: 'text',
+          id: 'sync_success',
+          text: '✅ Files Synced Successfully',
+          align: 'center',
+          style: 'header',
+        },
+        {
+          type: 'divider',
+          id: 'divider_sync',
+        },
+        {
+          type: 'text',
+          id: 'upload_status',
+          text: `📎 ${successCount}/${fileUrls.length} file(s) uploaded to Asana`,
+          align: 'center',
+          style: 'paragraph',
+        },
+        {
+          type: 'text',
+          id: 'shared_files_status',
+          text: `📁 ${updatedSharedFiles.length} file(s) in Shared Files`,
+          align: 'center',
+          style: 'muted',
+        },
+      ];
+
+      // Add warning if files were truncated
+      if (combinedFiles.length > 10) {
+        components.push({
+          type: 'text',
+          id: 'truncate_warning',
+          text: `⚠️ ${combinedFiles.length - 10} older file(s) removed (10 file limit)`,
+          align: 'center',
+          style: 'muted',
+        });
+      }
+
+      const syncSuccessCanvas = {
+        canvas: {
+          content: {
+            components: components,
+          },
+        },
+      };
+
+      console.log('===================================\n');
+      res.send(syncSuccessCanvas);
+    } catch (error) {
+      console.error('Error syncing files:', error);
+
+      const errorCanvas = {
+        canvas: {
+          content: {
+            components: [
+              {
+                type: 'text',
+                id: 'error',
+                text: '❌ Error Syncing Files',
+                align: 'center',
+                style: 'header',
+              },
+              {
+                type: 'divider',
+                id: 'divider_error',
+              },
+              {
+                type: 'text',
+                id: 'error_message',
+                text: error.message || 'An unexpected error occurred',
+                align: 'center',
+                style: 'paragraph',
+              },
+            ],
+          },
+        },
+      };
+      res.send(errorCanvas);
+    }
+  } 
+  else {
     res.send(initialCanvas);
   }
 });
@@ -2180,22 +2461,24 @@ app.post('/asana-webhook-prod', async (req, res) => {
         const taskId = event.parent.gid;
         console.log('  New story added to task:', taskId);
 
-        // Fetch the story details to get the comment text
-        const storyResponse = await fetch(
-          `https://app.asana.com/api/1.0/stories/${storyId}`,
-          {
-            method: 'GET',
-            headers: {
-              Authorization: `Bearer ${ASANA_TOKEN}`,
-              Accept: 'application/json',
-            },
-          }
-        );
+        // Fetch story and conversation in parallel (task ID is already available from event)
+        const [storyJson, result] = await Promise.all([
+          fetch(
+            `https://app.asana.com/api/1.0/stories/${storyId}`,
+            {
+              method: 'GET',
+              headers: {
+                Authorization: `Bearer ${ASANA_TOKEN}`,
+                Accept: 'application/json',
+              },
+            }
+          ).then((r) => (r.ok ? r.json() : null)),
+          getConversationIdFromTask(taskId),
+        ]);
 
-        if (storyResponse.ok) {
-          const storyData = await storyResponse.json();
-          const story = storyData.data;
+        const story = storyJson?.data;
 
+        if (story) {
           // Only process actual comments, not system events
           if (story.resource_subtype === 'comment_added' && story.text) {
             console.log('  Comment text:', story.text);
@@ -2208,9 +2491,6 @@ app.post('/asana-webhook-prod', async (req, res) => {
               );
               continue;
             }
-
-            // Get conversation ID from task (using shared helper)
-            const result = await getConversationIdFromTask(taskId);
 
             if (result && result.conversationId) {
               const conversationId = result.conversationId;
@@ -2249,6 +2529,109 @@ app.post('/asana-webhook-prod', async (req, res) => {
                   '  ✗ Failed to post comment to Intercom:',
                   errorData
                 );
+              }
+
+              // Check if comment has attachments and sync them to Shared Files
+              if (story.previews && story.previews.length > 0) {
+                console.log(`  📎 Comment has ${story.previews.length} attachment(s)`);
+                
+                // Get conversation to find ticket ID
+                const conversation = await getConversation(conversationId);
+                const ticketId = conversation?.ticket?.id;
+
+                if (ticketId) {
+                  console.log('  Ticket ID:', ticketId);
+                  
+                  // Fetch full story with attachments
+                  const fullStoryResponse = await fetch(
+                    `https://app.asana.com/api/1.0/stories/${storyId}?opt_fields=previews`,
+                    {
+                      method: 'GET',
+                      headers: {
+                        Authorization: `Bearer ${ASANA_TOKEN}`,
+                        Accept: 'application/json',
+                      },
+                    }
+                  );
+
+                  if (fullStoryResponse.ok) {
+                    const fullStoryData = await fullStoryResponse.json();
+                    const attachments = fullStoryData.data?.previews || [];
+                    
+                    if (attachments.length > 0) {
+                      console.log(`  Processing ${attachments.length} attachment(s)...`);
+                      
+                      // Fetch ticket to get existing Shared Files
+                      const ticket = await getTicket(ticketId);
+                      let existingSharedFiles = ticket?.ticket_attributes?.['Shared Files'] || [];
+                      if (!Array.isArray(existingSharedFiles)) {
+                        existingSharedFiles = [];
+                      }
+                      console.log(`  Existing Shared Files count: ${existingSharedFiles.length}`);
+
+                      // Prepare new files to add
+                      const newFiles = [];
+                      for (const attachment of attachments) {
+                        // Asana attachments in previews have download_url
+                        const attachmentUrl = attachment.download_url || attachment.url;
+                        const attachmentName = attachment.name || attachment.fallback || 'attachment';
+                        
+                        if (attachmentUrl) {
+                          newFiles.push({
+                            url: attachmentUrl,
+                            name: attachmentName,
+                            content_type: attachment.resource_subtype || 'application/octet-stream',
+                          });
+                          console.log(`    ✓ ${attachmentName} (${attachmentUrl})`);
+                        }
+                      }
+
+                      if (newFiles.length > 0) {
+                        // Combine with existing files (prioritize new files)
+                        const combinedFiles = [...newFiles, ...existingSharedFiles];
+                        
+                        // Limit to 10 files (Intercom limit)
+                        const updatedSharedFiles = combinedFiles.slice(0, 10);
+                        console.log(`  Updated Shared Files count: ${updatedSharedFiles.length} (limit: 10)`);
+
+                        // Update Intercom ticket's "Shared Files" field
+                        const updateSharedFilesResponse = await fetch(
+                          `https://api.intercom.io/tickets/${ticketId}`,
+                          {
+                            method: 'PUT',
+                            headers: {
+                              Authorization: `Bearer ${INTERCOM_TOKEN}`,
+                              'Intercom-Version': '2.14',
+                              'Content-Type': 'application/json',
+                              Accept: 'application/json',
+                            },
+                            body: JSON.stringify({
+                              ticket_attributes: {
+                                'Shared Files': updatedSharedFiles,
+                              },
+                            }),
+                          }
+                        );
+
+                        if (updateSharedFilesResponse.ok) {
+                          console.log('  ✓ Successfully updated Shared Files with attachments');
+                          if (combinedFiles.length > 10) {
+                            console.log(`  ⚠ Removed ${combinedFiles.length - 10} older file(s) due to 10-file limit`);
+                          }
+                        } else {
+                          const updateError = await updateSharedFilesResponse.json();
+                          console.error('  ✗ Error updating Shared Files:', updateError);
+                        }
+                      }
+                    }
+                  } else {
+                    console.log('  ⚠ Could not fetch full story details with attachments');
+                  }
+                } else {
+                  console.log('  ⚠ No ticket ID found, cannot sync attachments');
+                }
+              } else {
+                console.log('  No attachments in comment');
               }
             } else {
               console.log(
