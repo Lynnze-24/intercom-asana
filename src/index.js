@@ -1341,30 +1341,64 @@ app.post('/intercom-webhook', async (req, res) => {
         console.error('  ✗ Failed to post note to Asana:', errorData);
       }
 
-      // Check if note has attachments and upload them to Asana
-      const attachments = ticketPart.attachments || [];
-      if (attachments.length > 0) {
-        console.log(`  📎 Note has ${attachments.length} attachment(s)`);
-        console.log('  Uploading attachments to Asana task...');
+      // Check for attachments in multiple places:
+      // 1. ticketPart.attachments array
+      // 2. HTML img/a tags in the note body
+      // 3. ticketPart.attachment_urls
+      const directAttachments = ticketPart.attachments || [];
+      const attachmentUrlsFromBody = [];
+      
+      // Extract image URLs from HTML body (Intercom embeds files as <img> or <a> tags)
+      if (noteBody) {
+        // Match <img src="..."> tags
+        const imgRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
+        let imgMatch;
+        while ((imgMatch = imgRegex.exec(noteBody)) !== null) {
+          const url = imgMatch[1];
+          if (url && isValidUrl(url)) {
+            attachmentUrlsFromBody.push(url);
+          }
+        }
         
-        for (let i = 0; i < attachments.length; i++) {
-          const attachment = attachments[i];
-          const attachmentUrl = attachment.url;
-          const attachmentName = attachment.name || `attachment_${i + 1}`;
+        // Match <a href="..."> download links (for non-image files)
+        const linkRegex = /<a[^>]+href=["']([^"']*intercom-attachments[^"']*)["'][^>]*>/gi;
+        let linkMatch;
+        while ((linkMatch = linkRegex.exec(noteBody)) !== null) {
+          const url = linkMatch[1];
+          if (url && isValidUrl(url) && !attachmentUrlsFromBody.includes(url)) {
+            attachmentUrlsFromBody.push(url);
+          }
+        }
+      }
+      
+      // Combine all attachment URLs
+      const allAttachmentUrls = [
+        ...directAttachments.map(a => a.url).filter(Boolean),
+        ...attachmentUrlsFromBody,
+      ];
+      
+      console.log('  Direct attachments:', directAttachments.length);
+      console.log('  Attachments from HTML body:', attachmentUrlsFromBody.length);
+      console.log('  Total attachment URLs:', allAttachmentUrls.length);
+      
+      if (allAttachmentUrls.length > 0) {
+        console.log(`  📎 Uploading ${allAttachmentUrls.length} attachment(s) to Asana task...`);
+        
+        for (let i = 0; i < allAttachmentUrls.length; i++) {
+          const attachmentUrl = allAttachmentUrls[i];
           
-          if (attachmentUrl) {
-            try {
-              console.log(`    Uploading ${attachmentName}...`);
-              const permanentUrl = await uploadAttachmentToAsana(asanaTaskId, attachmentUrl);
-              
-              if (permanentUrl) {
-                console.log(`    ✓ Successfully uploaded ${attachmentName} to Asana`);
-              } else {
-                console.log(`    ✗ Failed to upload ${attachmentName}`);
-              }
-            } catch (error) {
-              console.error(`    ✗ Error uploading ${attachmentName}:`, error.message);
+          try {
+            console.log(`    Uploading attachment ${i + 1}...`);
+            console.log(`    URL: ${attachmentUrl}`);
+            const permanentUrl = await uploadAttachmentToAsana(asanaTaskId, attachmentUrl);
+            
+            if (permanentUrl) {
+              console.log(`    ✓ Successfully uploaded attachment ${i + 1} to Asana`);
+            } else {
+              console.log(`    ✗ Failed to upload attachment ${i + 1}`);
             }
+          } catch (error) {
+            console.error(`    ✗ Error uploading attachment ${i + 1}:`, error.message);
           }
         }
         
@@ -1490,30 +1524,53 @@ app.post('/intercom-webhook', async (req, res) => {
         console.error('  ✗ Failed to post note to Asana:', errorData);
       }
 
-      // Check if note has attachments and upload them to Asana
-      const attachments = latestNote.attachments || [];
-      if (attachments.length > 0) {
-        console.log(`  📎 Note has ${attachments.length} attachment(s)`);
-        console.log('  Uploading attachments to Asana task...');
+      // Check for attachments in multiple places
+      const legacyDirectAttachments = latestNote.attachments || [];
+      const legacyAttachmentUrlsFromBody = [];
+      
+      // Extract image/file URLs from HTML body
+      if (latestNote.body) {
+        const imgRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
+        let imgMatch;
+        while ((imgMatch = imgRegex.exec(latestNote.body)) !== null) {
+          const url = imgMatch[1];
+          if (url && isValidUrl(url)) {
+            legacyAttachmentUrlsFromBody.push(url);
+          }
+        }
         
-        for (let i = 0; i < attachments.length; i++) {
-          const attachment = attachments[i];
-          const attachmentUrl = attachment.url;
-          const attachmentName = attachment.name || `attachment_${i + 1}`;
+        const linkRegex = /<a[^>]+href=["']([^"']*intercom-attachments[^"']*)["'][^>]*>/gi;
+        let linkMatch;
+        while ((linkMatch = linkRegex.exec(latestNote.body)) !== null) {
+          const url = linkMatch[1];
+          if (url && isValidUrl(url) && !legacyAttachmentUrlsFromBody.includes(url)) {
+            legacyAttachmentUrlsFromBody.push(url);
+          }
+        }
+      }
+      
+      const legacyAllAttachmentUrls = [
+        ...legacyDirectAttachments.map(a => a.url).filter(Boolean),
+        ...legacyAttachmentUrlsFromBody,
+      ];
+      
+      if (legacyAllAttachmentUrls.length > 0) {
+        console.log(`  📎 Uploading ${legacyAllAttachmentUrls.length} attachment(s) to Asana task...`);
+        
+        for (let i = 0; i < legacyAllAttachmentUrls.length; i++) {
+          const attachmentUrl = legacyAllAttachmentUrls[i];
           
-          if (attachmentUrl) {
-            try {
-              console.log(`    Uploading ${attachmentName}...`);
-              const permanentUrl = await uploadAttachmentToAsana(asanaTaskId, attachmentUrl);
-              
-              if (permanentUrl) {
-                console.log(`    ✓ Successfully uploaded ${attachmentName} to Asana`);
-              } else {
-                console.log(`    ✗ Failed to upload ${attachmentName}`);
-              }
-            } catch (error) {
-              console.error(`    ✗ Error uploading ${attachmentName}:`, error.message);
+          try {
+            console.log(`    Uploading attachment ${i + 1}...`);
+            const permanentUrl = await uploadAttachmentToAsana(asanaTaskId, attachmentUrl);
+            
+            if (permanentUrl) {
+              console.log(`    ✓ Successfully uploaded attachment ${i + 1} to Asana`);
+            } else {
+              console.log(`    ✗ Failed to upload attachment ${i + 1}`);
             }
+          } catch (error) {
+            console.error(`    ✗ Error uploading attachment ${i + 1}:`, error.message);
           }
         }
         
