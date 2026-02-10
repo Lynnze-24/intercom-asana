@@ -2662,19 +2662,34 @@ app.post('/asana-webhook-prod', async (req, res) => {
                   
                   if (uploadResponse.ok) {
                     console.log(`  ✓ Successfully uploaded attachments to Intercom`);
+                    
+                    // Schedule temp file deletion after 30 seconds to give Intercom time to download
+                    setTimeout(() => {
+                      console.log('  Cleaning up temp files (delayed)...');
+                      for (const tempFilePath of tempFilePaths) {
+                        try {
+                          if (fs.existsSync(tempFilePath)) {
+                            fs.unlinkSync(tempFilePath);
+                            console.log(`    ✓ Deleted ${path.basename(tempFilePath)}`);
+                          }
+                        } catch (error) {
+                          console.error(`    ✗ Error deleting ${path.basename(tempFilePath)}:`, error.message);
+                        }
+                      }
+                    }, 30000); // 30 seconds delay
                   } else {
                     const uploadError = await uploadResponse.json();
                     console.error(`  ✗ Error uploading to Intercom:`, uploadError);
-                  }
-                  
-                  // Delete temp files after upload
-                  console.log('  Cleaning up temp files...');
-                  for (const tempFilePath of tempFilePaths) {
-                    try {
-                      fs.unlinkSync(tempFilePath);
-                      console.log(`    ✓ Deleted ${path.basename(tempFilePath)}`);
-                    } catch (error) {
-                      console.error(`    ✗ Error deleting ${path.basename(tempFilePath)}:`, error.message);
+                    
+                    // Delete temp files immediately on error
+                    console.log('  Cleaning up temp files...');
+                    for (const tempFilePath of tempFilePaths) {
+                      try {
+                        fs.unlinkSync(tempFilePath);
+                        console.log(`    ✓ Deleted ${path.basename(tempFilePath)}`);
+                      } catch (error) {
+                        console.error(`    ✗ Error deleting ${path.basename(tempFilePath)}:`, error.message);
+                      }
                     }
                   }
                 }
