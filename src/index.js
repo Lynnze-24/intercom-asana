@@ -5,7 +5,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import FormData from 'form-data';
-import fs from 'fs';
 import whitelistStatus from './whitelistStatus.js';
 import projects from './projects.js';
 
@@ -177,11 +176,6 @@ app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
-
-// Serve temporary files from /tmp directory (serverless compatible)
-const tempDir = '/tmp';
-// No need to create /tmp, it always exists in serverless environments
-app.use('/temp', express.static(tempDir));
 
 /*
   This object defines the canvas that will display when your app initializes.
@@ -2533,22 +2527,77 @@ app.post('/asana-webhook-prod', async (req, res) => {
               const conversationId = result.conversationId;
               console.log('  Found conversation ID:', conversationId);
 
-              // Extract Asana asset URLs from comment text before cleaning
-              const asanaAssetUrlRegex = /https?:\/\/app\.asana\.com\/app\/asana\/-\/get_asset\?asset_id=[^\s]*/g;
-              const assetUrls = story.text.match(asanaAssetUrlRegex) || [];
+              // Extract Asana asset IDs from comment text
+              const asanaAssetUrlRegex = /https?:\/\/app\.asana\.com\/app\/asana\/-\/get_asset\?asset_id=(\d+)/g;
+              const assetIds = [];
+              let match;
+              while ((match = asanaAssetUrlRegex.exec(story.text)) !== null) {
+                assetIds.push(match[1]);
+              }
               
-              // Clean comment text by removing Asana asset URLs (they'll be posted as attachments separately)
-              let cleanCommentText = story.text.replace(asanaAssetUrlRegex, '').trim();
+              // Clean comment text by removing Asana asset URLs
+              let cleanCommentText = story.text.replace(/https?:\/\/app\.asana\.com\/app\/asana\/-\/get_asset\?asset_id=[^\s]*/g, '').trim();
               
-              // If text is empty after removing URLs, use a default message
               if (!cleanCommentText) {
                 cleanCommentText = '(attachment only)';
               }
 
-              // Post comment to Intercom conversation as a private note
+              // Get public download URLs from Asana attachments API
+              const attachmentDownloadUrls = [];
+              if (assetIds.length > 0) {
+                console.log(`  📎 Found ${assetIds.length} attachment(s) in comment`);
+                
+                for (const assetId of assetIds) {
+                  try {
+                    console.log(`    Fetching attachment details for asset ${assetId}...`);
+                    const attachmentResponse = await fetch(
+                      `https://app.asana.com/api/1.0/attachments/${assetId}`,
+                      {
+                        method: 'GET',
+                        headers: {
+                          Authorization: `Bearer ${ASANA_TOKEN}`,
+                          Accept: 'application/json',
+                        },
+                      }
+                    );
+                    
+                    if (attachmentResponse.ok) {
+                      const attachmentData = await attachmentResponse.json();
+                      const downloadUrl = attachmentData.data?.download_url;
+                      const name = attachmentData.data?.name || 'attachment';
+                      
+                      if (downloadUrl) {
+                        attachmentDownloadUrls.push(downloadUrl);
+                        console.log(`    ✓ Got download URL for ${name}`);
+                      } else {
+                        console.log(`    ⚠ No download_url for asset ${assetId}`);
+                      }
+                    } else {
+                      console.error(`    ✗ Failed to fetch attachment ${assetId}`);
+                    }
+                  } catch (error) {
+                    console.error(`    ✗ Error fetching attachment ${assetId}:`, error.message);
+                  }
+                }
+              }
+
+              // Post ONE note with comment text + attachments
               const commentBody = `[Asana Comment by ${
                 story.created_by?.name || 'Unknown'
               }]\n${cleanCommentText}`;
+
+              const replyBody = {
+                message_type: 'note',
+                type: 'admin',
+                admin_id: INTERCOM_ADMIN_ID,
+                body: commentBody,
+              };
+
+              // Add attachment URLs if we have any
+              if (attachmentDownloadUrls.length > 0) {
+                replyBody.attachment_urls = attachmentDownloadUrls;
+                console.log(`  Posting note with ${attachmentDownloadUrls.length} attachment(s)`);
+              }
 
               const intercomResponse = await fetch(
                 `https://api.intercom.io/conversations/${conversationId}/reply`,
@@ -2559,144 +2608,16 @@ app.post('/asana-webhook-prod', async (req, res) => {
                     'Content-Type': 'application/json',
                     Accept: 'application/json',
                   },
-                  body: JSON.stringify({
-                    message_type: 'note',
-                    type: 'admin',
-                    admin_id: INTERCOM_ADMIN_ID,
-                    body: commentBody,
-                  }),
+                  body: JSON.stringify(replyBody),
                 }
               );
 
               if (intercomResponse.ok) {
-                console.log(
-                  '  ✓ Comment posted to Intercom conversation as private note'
-                );
+                console.log('  ✓ Comment posted to Intercom conversation as private note');
               } else {
                 const errorData = await intercomResponse.json();
-                console.error(
-                  '  ✗ Failed to post comment to Intercom:',
-                  errorData
-                );
+                console.error('  ✗ Failed to post comment to Intercom:', errorData);
               }
-
-              // Download and upload Asana attachments if found in comment text
-              if (assetUrls.length > 0) {
-                console.log(`  📎 Found ${assetUrls.length} attachment(s) in comment`);
-                console.log('  Downloading and uploading attachments to Intercom...');
-                
-                const tempFileUrls = [];
-                const tempFilePaths = [];
-                
-                for (let i = 0; i < assetUrls.length; i++) {
-                  const assetUrl = assetUrls[i];
-                  
-                  try {
-                    console.log(`    Downloading attachment ${i + 1}...`);
-                    
-                    // Download file from Asana (requires auth)
-                    const fileResponse = await fetch(assetUrl, {
-                      headers: {
-                        Authorization: `Bearer ${ASANA_TOKEN}`,
-                      },
-                    });
-                    
-                    if (!fileResponse.ok) {
-                      console.error(`    ✗ Failed to download attachment ${i + 1}`);
-                      continue;
-                    }
-                    
-                    const fileBuffer = await fileResponse.buffer();
-                    
-                    // Extract filename from content-disposition header if available
-                    const contentDisposition = fileResponse.headers.get('content-disposition');
-                    let filename = `attachment_${i + 1}`;
-                    if (contentDisposition) {
-                      const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-                      if (filenameMatch && filenameMatch[1]) {
-                        filename = filenameMatch[1].replace(/['"]/g, '');
-                      }
-                    }
-                    
-                    // Save file to temp directory
-                    const tempFilePath = path.join(tempDir, `${Date.now()}_${filename}`);
-                    fs.writeFileSync(tempFilePath, fileBuffer);
-                    tempFilePaths.push(tempFilePath);
-                    
-                    // Generate public URL for the temp file
-                    const publicUrl = `${req.protocol}://${req.get('host')}/temp/${path.basename(tempFilePath)}`;
-                    tempFileUrls.push(publicUrl);
-                    
-                    console.log(`    ✓ Downloaded ${filename} (${fileBuffer.length} bytes)`);
-                    console.log(`    ✓ Saved to temp: ${path.basename(tempFilePath)}`);
-                  } catch (error) {
-                    console.error(`    ✗ Error processing attachment ${i + 1}:`, error.message);
-                  }
-                }
-                
-                // Upload to Intercom using attachment_urls
-                if (tempFileUrls.length > 0) {
-                  console.log(`  Uploading ${tempFileUrls.length} file(s) to Intercom...`);
-                  console.log('  Temp file URLs:', tempFileUrls);
-                  
-                  const noteBody = `[Asana File Sync]\n\n${tempFileUrls.length} attachment(s) from Asana comment.`;
-                  
-                  const uploadResponse = await fetch(
-                    `https://api.intercom.io/conversations/${conversationId}/reply`,
-                    {
-                      method: 'POST',
-                      headers: {
-                        Authorization: `Bearer ${INTERCOM_TOKEN}`,
-                        'Content-Type': 'application/json',
-                        Accept: 'application/json',
-                      },
-                      body: JSON.stringify({
-                        message_type: 'note',
-                        type: 'admin',
-                        admin_id: INTERCOM_ADMIN_ID,
-                        body: noteBody,
-                        attachment_urls: tempFileUrls,
-                      }),
-                    }
-                  );
-                  
-                  if (uploadResponse.ok) {
-                    console.log(`  ✓ Successfully uploaded attachments to Intercom`);
-                    
-                    // Schedule temp file deletion after 30 seconds to give Intercom time to download
-                    setTimeout(() => {
-                      console.log('  Cleaning up temp files (delayed)...');
-                      for (const tempFilePath of tempFilePaths) {
-                        try {
-                          if (fs.existsSync(tempFilePath)) {
-                            fs.unlinkSync(tempFilePath);
-                            console.log(`    ✓ Deleted ${path.basename(tempFilePath)}`);
-                          }
-                        } catch (error) {
-                          console.error(`    ✗ Error deleting ${path.basename(tempFilePath)}:`, error.message);
-                        }
-                      }
-                    }, 30000); // 30 seconds delay
-                  } else {
-                    const uploadError = await uploadResponse.json();
-                    console.error(`  ✗ Error uploading to Intercom:`, uploadError);
-                    
-                    // Delete temp files immediately on error
-                    console.log('  Cleaning up temp files...');
-                    for (const tempFilePath of tempFilePaths) {
-                      try {
-                        fs.unlinkSync(tempFilePath);
-                        console.log(`    ✓ Deleted ${path.basename(tempFilePath)}`);
-                      } catch (error) {
-                        console.error(`    ✗ Error deleting ${path.basename(tempFilePath)}:`, error.message);
-                      }
-                    }
-                  }
-                }
-                
-                console.log('  ✓ Finished processing attachments');
-              }
-
             } else {
               console.log(
                 '  ⚠ Skipping comment sync - no conversation ID found'
