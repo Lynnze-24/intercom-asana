@@ -178,11 +178,9 @@ app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Serve temporary files from temp directory
-const tempDir = path.join(__dirname, 'temp');
-if (!fs.existsSync(tempDir)) {
-  fs.mkdirSync(tempDir, { recursive: true });
-}
+// Serve temporary files from /tmp directory (serverless compatible)
+const tempDir = '/tmp';
+// No need to create /tmp, it always exists in serverless environments
 app.use('/temp', express.static(tempDir));
 
 /*
