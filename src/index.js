@@ -1273,6 +1273,7 @@ app.post('/intercom-webhook', async (req, res) => {
 
       console.log('  Ticket ID:', ticket.id);
       console.log('  Asana Task ID:', asanaTaskId);
+      console.log('  Full ticket_part:', JSON.stringify(ticketPart, null, 2));
 
       // Get note details from ticket_part
       const noteBody = ticketPart.body || '';
@@ -1339,45 +1340,50 @@ app.post('/intercom-webhook', async (req, res) => {
         console.log('  ℹ No text content in note, checking for attachments only');
       }
 
-      // Check for attachments in multiple places:
-      // 1. ticketPart.attachments array
-      // 2. HTML img/a tags in the note body
-      // 3. ticketPart.attachment_urls
-      const directAttachments = ticketPart.attachments || [];
-      const attachmentUrlsFromBody = [];
+      // Check for attachments in all possible places
+      const allAttachmentUrls = [];
       
-      // Extract image URLs from HTML body (Intercom embeds files as <img> or <a> tags)
+      // 1. ticketPart.attachments array
+      const directAttachments = ticketPart.attachments || [];
+      for (const a of directAttachments) {
+        if (a?.url && !allAttachmentUrls.includes(a.url)) allAttachmentUrls.push(a.url);
+      }
+      
+      // 2. ticketPart.attachment_urls array
+      const directUrls = ticketPart.attachment_urls || [];
+      for (const url of directUrls) {
+        if (url && !allAttachmentUrls.includes(url)) allAttachmentUrls.push(url);
+      }
+      
+      // 3. Extract URLs from HTML body (<img src>, <a href>)
       if (noteBody) {
         // Match <img src="..."> tags
         const imgRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
         let imgMatch;
         while ((imgMatch = imgRegex.exec(noteBody)) !== null) {
           const url = imgMatch[1];
-          if (url && isValidUrl(url)) {
-            attachmentUrlsFromBody.push(url);
+          if (url && isValidUrl(url) && !allAttachmentUrls.includes(url)) {
+            allAttachmentUrls.push(url);
           }
         }
         
-        // Match <a href="..."> download links (for non-image files)
-        const linkRegex = /<a[^>]+href=["']([^"']*intercom-attachments[^"']*)["'][^>]*>/gi;
+        // Match <a href="..."> download links
+        const linkRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>/gi;
         let linkMatch;
         while ((linkMatch = linkRegex.exec(noteBody)) !== null) {
           const url = linkMatch[1];
-          if (url && isValidUrl(url) && !attachmentUrlsFromBody.includes(url)) {
-            attachmentUrlsFromBody.push(url);
+          if (url && isValidUrl(url) && !allAttachmentUrls.includes(url)) {
+            allAttachmentUrls.push(url);
           }
         }
       }
       
-      // Combine all attachment URLs
-      const allAttachmentUrls = [
-        ...directAttachments.map(a => a.url).filter(Boolean),
-        ...attachmentUrlsFromBody,
-      ];
-      
       console.log('  Direct attachments:', directAttachments.length);
-      console.log('  Attachments from HTML body:', attachmentUrlsFromBody.length);
-      console.log('  Total attachment URLs:', allAttachmentUrls.length);
+      console.log('  Direct attachment_urls:', directUrls.length);
+      console.log('  Total attachment URLs found:', allAttachmentUrls.length);
+      if (allAttachmentUrls.length > 0) {
+        console.log('  URLs:', allAttachmentUrls);
+      }
       
       if (allAttachmentUrls.length > 0) {
         console.log(`  📎 Uploading ${allAttachmentUrls.length} attachment(s) to Asana task...`);
