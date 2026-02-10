@@ -2513,6 +2513,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
           if (story.resource_subtype === 'comment_added' && story.text) {
             console.log('  Comment text:', story.text);
             console.log('  Created by:', story.created_by?.name);
+            console.log('story:', JSON.stringify(story, null, 2));
 
             // Check if this comment was created by the integration (to prevent loop)
             if (story.text.startsWith('[Intercom Note by')) {
@@ -2649,6 +2650,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
                 
                 console.log('  ✓ Finished processing attachments');
               }
+
             } else {
               console.log(
                 '  ⚠ Skipping comment sync - no conversation ID found'
