@@ -1275,14 +1275,9 @@ app.post('/intercom-webhook', async (req, res) => {
       console.log('  Asana Task ID:', asanaTaskId);
 
       // Get note details from ticket_part
-      const noteBody = ticketPart.body;
+      const noteBody = ticketPart.body || '';
       const noteAuthor = ticketPart.author?.name || 'Admin';
       const appPackageCode = ticketPart.app_package_code;
-
-      if (!noteBody) {
-        console.log('  ⚠ No note body found');
-        return res.status(200).send();
-      }
 
       // Check if note was created by an integration app (to prevent loop)
       if (appPackageCode) {
@@ -1311,34 +1306,37 @@ app.post('/intercom-webhook', async (req, res) => {
         return res.status(200).send();
       }
 
-      // Format note for Asana comment
-      const commentBody = `[Intercom Note by ${noteAuthor}]\n${plainTextBody}`;
+      // Post comment text to Asana (only if there's actual text content)
+      if (plainTextBody) {
+        const commentBody = `[Intercom Note by ${noteAuthor}]\n${plainTextBody}`;
 
-      // Post comment to Asana task
-      const asanaResponse = await fetch(
-        `https://app.asana.com/api/1.0/tasks/${asanaTaskId}/stories`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${ASANA_TOKEN}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          body: JSON.stringify({
-            data: {
-              text: commentBody,
+        const asanaResponse = await fetch(
+          `https://app.asana.com/api/1.0/tasks/${asanaTaskId}/stories`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${ASANA_TOKEN}`,
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
             },
-          }),
-        }
-      );
+            body: JSON.stringify({
+              data: {
+                text: commentBody,
+              },
+            }),
+          }
+        );
 
-      if (asanaResponse.ok) {
-        const asanaData = await asanaResponse.json();
-        console.log('  ✓ Note posted to Asana task as comment');
-        console.log('  Asana story ID:', asanaData.data.gid);
+        if (asanaResponse.ok) {
+          const asanaData = await asanaResponse.json();
+          console.log('  ✓ Note posted to Asana task as comment');
+          console.log('  Asana story ID:', asanaData.data.gid);
+        } else {
+          const errorData = await asanaResponse.json();
+          console.error('  ✗ Failed to post note to Asana:', errorData);
+        }
       } else {
-        const errorData = await asanaResponse.json();
-        console.error('  ✗ Failed to post note to Asana:', errorData);
+        console.log('  ℹ No text content in note, checking for attachments only');
       }
 
       // Check for attachments in multiple places:
