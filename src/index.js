@@ -1340,6 +1340,36 @@ app.post('/intercom-webhook', async (req, res) => {
         const errorData = await asanaResponse.json();
         console.error('  ✗ Failed to post note to Asana:', errorData);
       }
+
+      // Check if note has attachments and upload them to Asana
+      const attachments = ticketPart.attachments || [];
+      if (attachments.length > 0) {
+        console.log(`  📎 Note has ${attachments.length} attachment(s)`);
+        console.log('  Uploading attachments to Asana task...');
+        
+        for (let i = 0; i < attachments.length; i++) {
+          const attachment = attachments[i];
+          const attachmentUrl = attachment.url;
+          const attachmentName = attachment.name || `attachment_${i + 1}`;
+          
+          if (attachmentUrl) {
+            try {
+              console.log(`    Uploading ${attachmentName}...`);
+              const permanentUrl = await uploadAttachmentToAsana(asanaTaskId, attachmentUrl);
+              
+              if (permanentUrl) {
+                console.log(`    ✓ Successfully uploaded ${attachmentName} to Asana`);
+              } else {
+                console.log(`    ✗ Failed to upload ${attachmentName}`);
+              }
+            } catch (error) {
+              console.error(`    ✗ Error uploading ${attachmentName}:`, error.message);
+            }
+          }
+        }
+        
+        console.log('  ✓ Finished uploading attachments');
+      }
     }
     // Handle conversation.admin.noted event (legacy support)
     else if (topic === 'conversation.admin.noted') {
@@ -1458,6 +1488,36 @@ app.post('/intercom-webhook', async (req, res) => {
       } else {
         const errorData = await asanaResponse.json();
         console.error('  ✗ Failed to post note to Asana:', errorData);
+      }
+
+      // Check if note has attachments and upload them to Asana
+      const attachments = latestNote.attachments || [];
+      if (attachments.length > 0) {
+        console.log(`  📎 Note has ${attachments.length} attachment(s)`);
+        console.log('  Uploading attachments to Asana task...');
+        
+        for (let i = 0; i < attachments.length; i++) {
+          const attachment = attachments[i];
+          const attachmentUrl = attachment.url;
+          const attachmentName = attachment.name || `attachment_${i + 1}`;
+          
+          if (attachmentUrl) {
+            try {
+              console.log(`    Uploading ${attachmentName}...`);
+              const permanentUrl = await uploadAttachmentToAsana(asanaTaskId, attachmentUrl);
+              
+              if (permanentUrl) {
+                console.log(`    ✓ Successfully uploaded ${attachmentName} to Asana`);
+              } else {
+                console.log(`    ✗ Failed to upload ${attachmentName}`);
+              }
+            } catch (error) {
+              console.error(`    ✗ Error uploading ${attachmentName}:`, error.message);
+            }
+          }
+        }
+        
+        console.log('  ✓ Finished uploading attachments');
       }
     } else {
       console.log('  ℹ Ignoring event topic:', topic);
