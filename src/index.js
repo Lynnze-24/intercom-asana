@@ -1273,7 +1273,6 @@ app.post('/intercom-webhook', async (req, res) => {
 
       console.log('  Ticket ID:', ticket.id);
       console.log('  Asana Task ID:', asanaTaskId);
-      console.log('  Full ticket_part:', JSON.stringify(ticketPart, null, 2));
 
       // Get note details from ticket_part
       const noteBody = ticketPart.body || '';
