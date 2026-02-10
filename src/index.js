@@ -2582,9 +2582,9 @@ app.post('/asana-webhook-prod', async (req, res) => {
               }
 
               // Post ONE note with comment text + attachments
-              const commentBody = `[Asana Comment by ${
+              const commentBody = `<b>[Asana Comment by ${
                 story.created_by?.name || 'Unknown'
-              }]\n${cleanCommentText}`;
+              }]</b><br>${cleanCommentText}`;
 
               const replyBody = {
                 message_type: 'note',
