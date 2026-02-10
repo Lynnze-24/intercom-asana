@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import FormData from 'form-data';
+import fs from 'fs';
 import whitelistStatus from './whitelistStatus.js';
 import projects from './projects.js';
 
@@ -176,6 +177,13 @@ app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Serve temporary files from temp directory
+const tempDir = path.join(__dirname, 'temp');
+if (!fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir, { recursive: true });
+}
+app.use('/temp', express.static(tempDir));
 
 /*
   This object defines the canvas that will display when your app initializes.
@@ -2579,12 +2587,14 @@ app.post('/asana-webhook-prod', async (req, res) => {
                 console.log(`  📎 Found ${assetUrls.length} attachment(s) in comment`);
                 console.log('  Downloading and uploading attachments to Intercom...');
                 
+                const tempFileUrls = [];
+                const tempFilePaths = [];
+                
                 for (let i = 0; i < assetUrls.length; i++) {
                   const assetUrl = assetUrls[i];
-                  const attachmentName = `attachment_${i + 1}`;
                   
                   try {
-                    console.log(`    Downloading ${attachmentName}...`);
+                    console.log(`    Downloading attachment ${i + 1}...`);
                     
                     // Download file from Asana (requires auth)
                     const fileResponse = await fetch(assetUrl, {
@@ -2594,16 +2604,15 @@ app.post('/asana-webhook-prod', async (req, res) => {
                     });
                     
                     if (!fileResponse.ok) {
-                      console.error(`    ✗ Failed to download ${attachmentName}`);
+                      console.error(`    ✗ Failed to download attachment ${i + 1}`);
                       continue;
                     }
                     
                     const fileBuffer = await fileResponse.buffer();
-                    const contentType = fileResponse.headers.get('content-type') || 'application/octet-stream';
                     
                     // Extract filename from content-disposition header if available
                     const contentDisposition = fileResponse.headers.get('content-disposition');
-                    let filename = attachmentName;
+                    let filename = `attachment_${i + 1}`;
                     if (contentDisposition) {
                       const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
                       if (filenameMatch && filenameMatch[1]) {
@@ -2611,40 +2620,64 @@ app.post('/asana-webhook-prod', async (req, res) => {
                       }
                     }
                     
+                    // Save file to temp directory
+                    const tempFilePath = path.join(tempDir, `${Date.now()}_${filename}`);
+                    fs.writeFileSync(tempFilePath, fileBuffer);
+                    tempFilePaths.push(tempFilePath);
+                    
+                    // Generate public URL for the temp file
+                    const publicUrl = `${req.protocol}://${req.get('host')}/temp/${path.basename(tempFilePath)}`;
+                    tempFileUrls.push(publicUrl);
+                    
                     console.log(`    ✓ Downloaded ${filename} (${fileBuffer.length} bytes)`);
-                    console.log(`    Uploading to Intercom...`);
-                    
-                    // Upload file to Intercom using multipart/form-data
-                    const formData = new FormData();
-                    formData.append('message_type', 'note');
-                    formData.append('type', 'admin');
-                    formData.append('admin_id', INTERCOM_ADMIN_ID);
-                    formData.append('body', `[Asana File Sync]\n\n${filename}`);
-                    formData.append('attachment_files', fileBuffer, {
-                      filename: filename,
-                      contentType: contentType,
-                    });
-                    
-                    const uploadResponse = await fetch(
-                      `https://api.intercom.io/conversations/${conversationId}/reply`,
-                      {
-                        method: 'POST',
-                        headers: {
-                          Authorization: `Bearer ${INTERCOM_TOKEN}`,
-                          ...formData.getHeaders(),
-                        },
-                        body: formData,
-                      }
-                    );
-                    
-                    if (uploadResponse.ok) {
-                      console.log(`    ✓ Successfully uploaded ${filename} to Intercom`);
-                    } else {
-                      const uploadError = await uploadResponse.json();
-                      console.error(`    ✗ Error uploading ${filename}:`, uploadError);
-                    }
+                    console.log(`    ✓ Saved to temp: ${path.basename(tempFilePath)}`);
                   } catch (error) {
-                    console.error(`    ✗ Error processing ${attachmentName}:`, error.message);
+                    console.error(`    ✗ Error processing attachment ${i + 1}:`, error.message);
+                  }
+                }
+                
+                // Upload to Intercom using attachment_urls
+                if (tempFileUrls.length > 0) {
+                  console.log(`  Uploading ${tempFileUrls.length} file(s) to Intercom...`);
+                  console.log('  Temp file URLs:', tempFileUrls);
+                  
+                  const noteBody = `[Asana File Sync]\n\n${tempFileUrls.length} attachment(s) from Asana comment.`;
+                  
+                  const uploadResponse = await fetch(
+                    `https://api.intercom.io/conversations/${conversationId}/reply`,
+                    {
+                      method: 'POST',
+                      headers: {
+                        Authorization: `Bearer ${INTERCOM_TOKEN}`,
+                        'Content-Type': 'application/json',
+                        Accept: 'application/json',
+                      },
+                      body: JSON.stringify({
+                        message_type: 'note',
+                        type: 'admin',
+                        admin_id: INTERCOM_ADMIN_ID,
+                        body: noteBody,
+                        attachment_urls: tempFileUrls,
+                      }),
+                    }
+                  );
+                  
+                  if (uploadResponse.ok) {
+                    console.log(`  ✓ Successfully uploaded attachments to Intercom`);
+                  } else {
+                    const uploadError = await uploadResponse.json();
+                    console.error(`  ✗ Error uploading to Intercom:`, uploadError);
+                  }
+                  
+                  // Delete temp files after upload
+                  console.log('  Cleaning up temp files...');
+                  for (const tempFilePath of tempFilePaths) {
+                    try {
+                      fs.unlinkSync(tempFilePath);
+                      console.log(`    ✓ Deleted ${path.basename(tempFilePath)}`);
+                    } catch (error) {
+                      console.error(`    ✗ Error deleting ${path.basename(tempFilePath)}:`, error.message);
+                    }
                   }
                 }
                 
