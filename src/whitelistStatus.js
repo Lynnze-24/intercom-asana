@@ -3,6 +3,7 @@
 const whitelistStatus = [
   'Case Report Created (bn)',
   'Submitted',
+  'PYT Checking',
 ];
 
 export default whitelistStatus;
