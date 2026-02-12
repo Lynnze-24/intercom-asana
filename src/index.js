@@ -1248,16 +1248,6 @@ app.post('/intercom-webhook', async (req, res) => {
     const data = req.body.data?.item;
 
     console.log('Event topic:', topic);
-    console.log('All webhook topics/keys:', Object.keys(req.body));
-    if (data) {
-      console.log('Data keys:', Object.keys(data));
-      if (data.ticket_part) {
-        console.log('ticket_part.part_type:', data.ticket_part.part_type);
-        console.log('ticket_part.body exists:', !!data.ticket_part.body);
-        console.log('ticket_part.attachments count:', (data.ticket_part.attachments || []).length);
-        console.log('ticket_part.app_package_code:', data.ticket_part.app_package_code || 'none');
-      }
-    }
 
     // Handle ticket.note.created event
     if (topic === 'ticket.note.created') {
@@ -1638,19 +1628,6 @@ app.post('/initialize', async (req, res) => {
             align: 'center',
             style: 'paragraph',
           },
-          {
-            type: 'divider',
-            id: 'divider_init',
-          },
-          {
-            type: 'button',
-            label: 'Sync Files',
-            style: 'secondary',
-            id: 'sync_files_button',
-            action: {
-              type: 'submit',
-            },
-          },
         ];
 
         const completedCanvas = {
@@ -1764,19 +1741,6 @@ app.post('/submit', async (req, res) => {
             text: `Task ID: ${existingTaskId}`,
             align: 'center',
             style: 'paragraph',
-          },
-          {
-            type: 'divider',
-            id: 'divider_existing',
-          },
-          {
-            type: 'button',
-            label: 'Sync Files',
-            style: 'secondary',
-            id: 'sync_files_button',
-            action: {
-              type: 'submit',
-            },
           },
         ];
 
@@ -2174,19 +2138,6 @@ Contact Information:
             align: 'center',
             style: 'muted',
           },
-          {
-            type: 'divider',
-            id: 'divider_1',
-          },
-          {
-            type: 'button',
-            label: 'Sync Files',
-            style: 'secondary',
-            id: 'sync_files_button',
-            action: {
-              type: 'submit',
-            },
-          },
         ];
 
         // Add attachment status if attachments were processed
@@ -2295,277 +2246,6 @@ Contact Information:
       res.send(errorCanvas);
     }
   } 
-  // Handle Sync Files button
-  else if (req.body.component_id === 'sync_files_button') {
-    try {
-      console.log('\n===== SYNC FILES BUTTON CLICKED =====');
-      console.log('Conversation ID:', conversationId);
-      console.log('Ticket ID:', ticketId);
-
-      if (!ticketId) {
-        throw new Error('No ticket found for this conversation');
-      }
-
-      // Fetch ticket to get Asana Task ID and files
-      const ticket = await getTicket(ticketId);
-      if (!ticket) {
-        throw new Error('Failed to fetch ticket details');
-      }
-
-      const asanaTaskId = ticket.ticket_attributes?.['Asana Task ID'];
-      if (!asanaTaskId) {
-        throw new Error('No Asana task linked to this ticket');
-      }
-
-      console.log('Asana Task ID:', asanaTaskId);
-
-      // Get files from "Intercom to Asana" field
-      const intercomToAsanaFiles = ticket.ticket_attributes?.['Intercom to Asana'];
-      console.log('Intercom to Asana field value:', intercomToAsanaFiles);
-
-      if (!intercomToAsanaFiles || (Array.isArray(intercomToAsanaFiles) && intercomToAsanaFiles.length === 0)) {
-        console.log('No files found in "Intercom to Asana" field');
-        const noFilesCanvas = {
-          canvas: {
-            content: {
-              components: [
-                {
-                  type: 'text',
-                  id: 'no_files',
-                  text: 'ℹ️ No Files to Sync',
-                  align: 'center',
-                  style: 'header',
-                },
-                {
-                  type: 'text',
-                  id: 'no_files_desc',
-                  text: 'The "Intercom to Asana" field is empty',
-                  align: 'center',
-                  style: 'muted',
-                },
-                {
-                  type: 'divider',
-                  id: 'divider_no_files',
-                },
-                {
-                  type: 'button',
-                  label: 'Sync Files',
-                  style: 'secondary',
-                  id: 'sync_files_button',
-                  action: {
-                    type: 'submit',
-                  },
-                },
-              ],
-            },
-          },
-        };
-        return res.send(noFilesCanvas);
-      }
-
-      // Extract file URLs
-      const fileUrls = extractAttachmentUrls(intercomToAsanaFiles, 'Intercom to Asana');
-      console.log(`Extracted ${fileUrls.length} file URL(s):`, fileUrls);
-
-      if (fileUrls.length === 0) {
-        throw new Error('No valid file URLs found in "Intercom to Asana" field');
-      }
-
-      // Upload files to Asana task
-      console.log('\n===== UPLOADING FILES TO ASANA =====');
-      let successCount = 0;
-      const uploadedFiles = [];
-
-      for (let i = 0; i < fileUrls.length; i++) {
-        const fileUrl = fileUrls[i];
-        console.log(`\nProcessing file ${i + 1}/${fileUrls.length}`);
-        console.log('File URL:', fileUrl);
-
-        try {
-          const permanentUrl = await uploadAttachmentToAsana(asanaTaskId, fileUrl);
-          if (permanentUrl) {
-            successCount++;
-            uploadedFiles.push({
-              url: fileUrl,
-              name: fileUrl.split('/').pop().split('?')[0] || `file_${i + 1}`,
-            });
-            console.log('✓ File uploaded successfully');
-          } else {
-            console.log('✗ File upload failed');
-          }
-        } catch (error) {
-          console.error('✗ Error uploading file:', error);
-        }
-      }
-
-      console.log(`\nUpload complete: ${successCount}/${fileUrls.length} files uploaded to Asana`);
-
-      // Post files as a note to Intercom conversation with actual attachments
-      console.log('\n===== POSTING FILES TO INTERCOM CONVERSATION =====');
-      
-      if (successCount > 0) {
-        // Extract file URLs for attachment_urls parameter
-        const attachmentUrls = uploadedFiles.map(f => f.url);
-        
-        // Create note body with prefix to prevent webhook loop
-        const noteBody = `[File Sync from Intercom to Asana]\n\n${successCount} file(s) synced to Asana and attached below.`;
-        
-        console.log('Posting note with attachments to conversation:', conversationId);
-        console.log('Attachment URLs:', attachmentUrls);
-        
-        const noteResponse = await fetch(
-          `https://api.intercom.io/conversations/${conversationId}/reply`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${INTERCOM_TOKEN}`,
-              'Content-Type': 'application/json',
-              Accept: 'application/json',
-            },
-            body: JSON.stringify({
-              message_type: 'note',
-              type: 'admin',
-              admin_id: INTERCOM_ADMIN_ID,
-              body: noteBody,
-              attachment_urls: attachmentUrls,
-            }),
-          }
-        );
-
-        if (noteResponse.ok) {
-          console.log('✓ Successfully posted note with file attachments to Intercom conversation');
-        } else {
-          const errorData = await noteResponse.json();
-          console.error('✗ Error posting note to Intercom:', errorData);
-        }
-      } else {
-        console.log('No files to post to conversation');
-      }
-
-      // Clear the "Intercom to Asana" field after successful sync
-      console.log('\n===== CLEARING INTERCOM TO ASANA FIELD =====');
-      const clearResponse = await fetch(
-        `https://api.intercom.io/tickets/${ticketId}`,
-        {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${INTERCOM_TOKEN}`,
-            'Intercom-Version': '2.14',
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          body: JSON.stringify({
-            ticket_attributes: {
-              'Intercom to Asana': [],
-            },
-          }),
-        }
-      );
-
-      if (clearResponse.ok) {
-        console.log('✓ Successfully cleared "Intercom to Asana" field');
-      } else {
-        const clearErrorData = await clearResponse.json();
-        console.error('✗ Error clearing "Intercom to Asana" field:', clearErrorData);
-      }
-
-      // Return success canvas with Sync button for repeated syncs
-      const components = [
-        {
-          type: 'text',
-          id: 'sync_success',
-          text: '✅ Files Synced Successfully',
-          align: 'center',
-          style: 'header',
-        },
-        {
-          type: 'divider',
-          id: 'divider_sync',
-        },
-        {
-          type: 'text',
-          id: 'upload_status',
-          text: `📎 ${successCount}/${fileUrls.length} file(s) uploaded to Asana`,
-          align: 'center',
-          style: 'paragraph',
-        },
-        {
-          type: 'text',
-          id: 'note_status',
-          text: '💬 Files attached to conversation',
-          align: 'center',
-          style: 'muted',
-        },
-        {
-          type: 'divider',
-          id: 'divider_sync_again',
-        },
-        {
-          type: 'button',
-          label: 'Sync Files',
-          style: 'secondary',
-          id: 'sync_files_button',
-          action: {
-            type: 'submit',
-          },
-        },
-      ];
-
-      const syncSuccessCanvas = {
-        canvas: {
-          content: {
-            components: components,
-          },
-        },
-      };
-
-      console.log('===================================\n');
-      res.send(syncSuccessCanvas);
-    } catch (error) {
-      console.error('Error syncing files:', error);
-
-      const errorCanvas = {
-        canvas: {
-          content: {
-            components: [
-              {
-                type: 'text',
-                id: 'error',
-                text: '❌ Error Syncing Files',
-                align: 'center',
-                style: 'header',
-              },
-              {
-                type: 'divider',
-                id: 'divider_error',
-              },
-              {
-                type: 'text',
-                id: 'error_message',
-                text: error.message || 'An unexpected error occurred',
-                align: 'center',
-                style: 'paragraph',
-              },
-              {
-                type: 'divider',
-                id: 'divider_error_retry',
-              },
-              {
-                type: 'button',
-                label: 'Sync Files',
-                style: 'secondary',
-                id: 'sync_files_button',
-                action: {
-                  type: 'submit',
-                },
-              },
-            ],
-          },
-        },
-      };
-      res.send(errorCanvas);
-    }
-  } 
   else {
     res.send(initialCanvas);
   }
@@ -2610,6 +2290,86 @@ app.post('/asana-webhook-prod', async (req, res) => {
       console.log('  Action:', event.action);
       console.log('  Resource type:', event.resource?.resource_type);
       console.log('  Resource GID:', event.resource?.gid);
+
+      // Process attachment events (files/videos added directly to task)
+      if (
+        event.resource?.resource_type === 'attachment' &&
+        event.action === 'added' &&
+        event.parent?.resource_type === 'task'
+      ) {
+        const attachmentGid = event.resource.gid;
+        const taskId = event.parent.gid;
+        console.log('  New attachment added to task:', taskId);
+        console.log('  Attachment GID:', attachmentGid);
+
+        // Fetch attachment details and conversation ID in parallel
+        const [attachmentJson, result] = await Promise.all([
+          fetch(
+            `https://app.asana.com/api/1.0/attachments/${attachmentGid}`,
+            {
+              method: 'GET',
+              headers: {
+                Authorization: `Bearer ${ASANA_TOKEN}`,
+                Accept: 'application/json',
+              },
+            }
+          ).then((r) => (r.ok ? r.json() : null)),
+          getConversationIdFromTask(taskId),
+        ]);
+
+        const attachment = attachmentJson?.data;
+
+        if (attachment && result && result.conversationId) {
+          const conversationId = result.conversationId;
+          const downloadUrl = attachment.download_url;
+          const attachmentName = attachment.name || 'attachment';
+          const createdByName = attachment.created_by?.name || 'Unknown';
+
+          console.log('  Attachment name:', attachmentName);
+          console.log('  Download URL:', downloadUrl ? 'found' : 'missing');
+          console.log('  Created by:', createdByName);
+
+          // Skip attachments uploaded by our integration (from Intercom sync)
+          // These are uploaded via uploadAttachmentToAsana which uses the ASANA_TOKEN
+          // We detect this by checking if the parent story was from our integration
+          if (!downloadUrl) {
+            console.log('  ⚠ No download URL for attachment, skipping');
+            continue;
+          }
+
+          // Post attachment to Intercom conversation as a note
+          const noteBody = `<b>[Asana File Sync]</b><br>${attachmentName}`;
+
+          const intercomResponse = await fetch(
+            `https://api.intercom.io/conversations/${conversationId}/reply`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${INTERCOM_TOKEN}`,
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+              },
+              body: JSON.stringify({
+                message_type: 'note',
+                type: 'admin',
+                admin_id: INTERCOM_ADMIN_ID,
+                body: noteBody,
+                attachment_urls: [downloadUrl],
+              }),
+            }
+          );
+
+          if (intercomResponse.ok) {
+            console.log('  ✓ Attachment posted to Intercom conversation');
+          } else {
+            const errorData = await intercomResponse.json();
+            console.error('  ✗ Failed to post attachment to Intercom:', errorData);
+          }
+        } else {
+          if (!attachment) console.log('  ⚠ Could not fetch attachment details');
+          if (!result?.conversationId) console.log('  ⚠ No conversation ID found');
+        }
+      }
 
       // Process story (comment) events
       if (
