@@ -1248,6 +1248,16 @@ app.post('/intercom-webhook', async (req, res) => {
     const data = req.body.data?.item;
 
     console.log('Event topic:', topic);
+    console.log('All webhook topics/keys:', Object.keys(req.body));
+    if (data) {
+      console.log('Data keys:', Object.keys(data));
+      if (data.ticket_part) {
+        console.log('ticket_part.part_type:', data.ticket_part.part_type);
+        console.log('ticket_part.body exists:', !!data.ticket_part.body);
+        console.log('ticket_part.attachments count:', (data.ticket_part.attachments || []).length);
+        console.log('ticket_part.app_package_code:', data.ticket_part.app_package_code || 'none');
+      }
+    }
 
     // Handle ticket.note.created event
     if (topic === 'ticket.note.created') {
