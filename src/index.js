@@ -198,6 +198,9 @@ async function getAsanaApiUserGid() {
 // Map to store Asana task ID to Intercom conversation ID
 const asanaTaskToConversation = new Map();
 
+// GIDs of attachments we uploaded from Intercom (to skip echo-back in Asana webhook)
+const intercomUploadedAttachmentGids = new Set();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -1150,12 +1153,17 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
 
     if (asanaResponse.ok) {
       const asanaData = await asanaResponse.json();
+      const attachmentGid = asanaData.data?.gid;
       const permanentUrl =
         asanaData.data?.permanent_url ||
         asanaData.data?.download_url ||
         asanaData.data?.url ||
         'uploaded'; // Return a truthy value even if URL is missing
       console.log('✓ Successfully uploaded attachment to Asana');
+      if (attachmentGid) {
+        intercomUploadedAttachmentGids.add(String(attachmentGid));
+        console.log('  Tracked GID for echo-back prevention:', attachmentGid);
+      }
       console.log('Asana response:', JSON.stringify(asanaData, null, 2));
       if (permanentUrl && permanentUrl !== 'uploaded') {
         console.log('Asana permanent URL:', permanentUrl);
@@ -2493,6 +2501,16 @@ app.post('/asana-webhook-prod', async (req, res) => {
         console.log('  New attachment added to task:', taskId);
         console.log('  Attachment GID:', attachmentGid);
 
+        // Skip if we uploaded this from Intercom (in-memory tracking)
+        const attachmentGidStr = String(attachmentGid);
+        if (intercomUploadedAttachmentGids.has(attachmentGidStr)) {
+          intercomUploadedAttachmentGids.delete(attachmentGidStr);
+          console.log(
+            '  ℹ Skipping - attachment was uploaded from Intercom (in-memory check)',
+          );
+          continue;
+        }
+
         // Fetch attachment details and conversation ID in parallel
         const [attachmentJson, result] = await Promise.all([
           fetch(`https://app.asana.com/api/1.0/attachments/${attachmentGid}`, {
@@ -2531,7 +2549,6 @@ app.post('/asana-webhook-prod', async (req, res) => {
           }
 
           // Skip if already handled by the story handler in this same webhook call
-          const attachmentGidStr = String(attachmentGid);
           if (processedAssetGids.has(attachmentGidStr)) {
             console.log(
               '  ℹ Skipping - attachment already handled by comment sync (preventing duplicate)',
