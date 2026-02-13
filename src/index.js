@@ -24,7 +24,7 @@ if (!ASANA_TOKEN || !ASANA_WORKSPACE || !ASANA_PROJECT) {
       '- ASANA_TOKEN',
       '- ASANA_WORKSPACE',
       '- ASANA_PROJECT',
-    ].join('\n')
+    ].join('\n'),
   );
 }
 
@@ -57,7 +57,7 @@ if (!INTERCOM_TOKEN || !INTERCOM_ADMIN_ID) {
       'Set these in your environment (or copy .env.example to .env):',
       '- INTERCOM_TOKEN',
       '- INTERCOM_ADMIN_ID',
-    ].join('\n')
+    ].join('\n'),
   );
 }
 
@@ -81,18 +81,18 @@ async function fetchTicketStates() {
       const responseData = await response.json();
       const states = responseData.data || []; // API returns states in 'data' array, not 'ticket_states'
       console.log(`✓ Fetched ${states.length} ticket states from Intercom`);
-      
+
       // Log available states for reference
       if (states.length > 0) {
         console.log('Available ticket states:');
         states.forEach((state) => {
           const ticketTypesCount = state.ticket_types?.data?.length || 0;
           console.log(
-            `  - ${state.internal_label} (category: ${state.category}, id: ${state.id}, applies to ${ticketTypesCount} ticket type(s))`
+            `  - ${state.internal_label} (category: ${state.category}, id: ${state.id}, applies to ${ticketTypesCount} ticket type(s))`,
           );
         });
       }
-      
+
       return states;
     } else {
       const errorData = await response.json();
@@ -118,7 +118,7 @@ async function initializeTicketStates() {
 async function getTicketStateId(labelOrCategory, ticketTypeId = null) {
   // Ensure ticket states are loaded
   const states = await initializeTicketStates();
-  
+
   if (!states || states.length === 0) {
     console.error('No ticket states available');
     return null;
@@ -127,13 +127,20 @@ async function getTicketStateId(labelOrCategory, ticketTypeId = null) {
   // Filter states by ticket type if provided
   let applicableStates = states;
   if (ticketTypeId) {
-    applicableStates = states.filter(state => 
-      state.ticket_types?.data?.some(type => String(type.id) === String(ticketTypeId))
+    applicableStates = states.filter((state) =>
+      state.ticket_types?.data?.some(
+        (type) => String(type.id) === String(ticketTypeId),
+      ),
     );
-    console.log(`  Filtered to ${applicableStates.length} states for ticket type ${ticketTypeId} (from ${states.length} total states)`);
-    
+    console.log(
+      `  Filtered to ${applicableStates.length} states for ticket type ${ticketTypeId} (from ${states.length} total states)`,
+    );
+
     if (applicableStates.length > 0) {
-      console.log('  Applicable states:', applicableStates.map(s => s.internal_label).join(', '));
+      console.log(
+        '  Applicable states:',
+        applicableStates.map((s) => s.internal_label).join(', '),
+      );
     }
   }
 
@@ -141,20 +148,20 @@ async function getTicketStateId(labelOrCategory, ticketTypeId = null) {
 
   // Try to find by internal label
   let state = applicableStates.find(
-    (s) => s.internal_label.toLowerCase() === normalizedInput
+    (s) => s.internal_label.toLowerCase() === normalizedInput,
   );
 
   // Try to find by external label
   if (!state) {
     state = applicableStates.find(
-      (s) => s.external_label.toLowerCase() === normalizedInput
+      (s) => s.external_label.toLowerCase() === normalizedInput,
     );
   }
 
   // Try to find by category
   if (!state) {
     state = applicableStates.find(
-      (s) => s.category.toLowerCase() === normalizedInput
+      (s) => s.category.toLowerCase() === normalizedInput,
     );
   }
 
@@ -163,6 +170,30 @@ async function getTicketStateId(labelOrCategory, ticketTypeId = null) {
 
 // Asana webhook secret (will be set during webhook handshake)
 let asanaWebhookSecret = null;
+
+// Cache for Asana API user GID (used to detect our own uploads and prevent loops)
+let asanaApiUserGid = null;
+
+async function getAsanaApiUserGid() {
+  if (asanaApiUserGid) return asanaApiUserGid;
+  try {
+    const response = await fetch('https://app.asana.com/api/1.0/users/me', {
+      headers: {
+        Authorization: `Bearer ${ASANA_TOKEN}`,
+        Accept: 'application/json',
+      },
+    });
+    if (response.ok) {
+      const data = await response.json();
+      asanaApiUserGid = data.data?.gid;
+      console.log('Cached Asana API user GID:', asanaApiUserGid);
+      return asanaApiUserGid;
+    }
+  } catch (error) {
+    console.error('Error fetching Asana API user:', error.message);
+  }
+  return null;
+}
 
 // Map to store Asana task ID to Intercom conversation ID
 const asanaTaskToConversation = new Map();
@@ -213,7 +244,7 @@ const initialCanvas = {
           id: 'project_dropdown',
           label: 'Select Asana Project',
           value: projects[0].id, // Default to first project
-          options: projects.map(project => ({
+          options: projects.map((project) => ({
             type: 'option',
             id: project.id,
             text: project.name,
@@ -249,7 +280,7 @@ async function getContactName(contactId) {
           Authorization: `Bearer ${INTERCOM_TOKEN}`,
           Accept: 'application/json',
         },
-      }
+      },
     );
 
     if (response.ok) {
@@ -275,7 +306,7 @@ async function getConversation(conversationId) {
           'Intercom-Version': '2.11',
           Accept: 'application/json',
         },
-      }
+      },
     );
 
     if (response.ok) {
@@ -302,14 +333,17 @@ async function getTicket(ticketId) {
           'Intercom-Version': '2.14',
           Accept: 'application/json',
         },
-      }
+      },
     );
 
     console.log(`  → Ticket API response status: ${response.status}`);
 
     if (response.ok) {
       const data = await response.json();
-      console.log(`  ✓ Ticket fetched successfully. Has attributes:`, !!data.ticket_attributes);
+      console.log(
+        `  ✓ Ticket fetched successfully. Has attributes:`,
+        !!data.ticket_attributes,
+      );
       return data;
     } else {
       const errorData = await response.json().catch(() => ({}));
@@ -321,8 +355,6 @@ async function getTicket(ticketId) {
     return null;
   }
 }
-
-
 
 // Helper function to get conversation ID from Asana task
 async function getConversationIdFromTask(taskId) {
@@ -336,14 +368,14 @@ async function getConversationIdFromTask(taskId) {
           Authorization: `Bearer ${ASANA_TOKEN}`,
           Accept: 'application/json',
         },
-      }
+      },
     );
 
     if (!taskResponse.ok) {
       const errorText = await taskResponse.text();
       console.error(
         '  ✗ Failed to fetch task details. Status:',
-        taskResponse.status
+        taskResponse.status,
       );
       console.error('  Error response:', errorText);
       return null;
@@ -372,7 +404,7 @@ async function getConversationIdFromTask(taskId) {
 
         console.log(
           '  ✓ Found Intercom Conversation ID field:',
-          JSON.stringify(field, null, 2)
+          JSON.stringify(field, null, 2),
         );
         console.log(
           '  → Extracted conversation ID:',
@@ -381,7 +413,7 @@ async function getConversationIdFromTask(taskId) {
             field.gid === ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID
               ? 'GID'
               : 'name'
-          })`
+          })`,
         );
         break;
       }
@@ -399,13 +431,13 @@ async function getConversationIdFromTask(taskId) {
       console.log('  ✗ No conversation ID found for this task');
       console.log('  Possible causes:');
       console.log(
-        '    1. ⚠ The "Intercom Conversation ID" field has no value on this task'
+        '    1. ⚠ The "Intercom Conversation ID" field has no value on this task',
       );
       console.log(
-        '    2. ⚠ This task was created before the field was added, OR'
+        '    2. ⚠ This task was created before the field was added, OR',
       );
       console.log(
-        '    3. ⚠ The task was not created through the Intercom integration'
+        '    3. ⚠ The task was not created through the Intercom integration',
       );
     }
 
@@ -419,7 +451,9 @@ async function getConversationIdFromTask(taskId) {
 // Helper function to update Intercom ticket attributes
 async function updateTicketAttribute(ticketId, asanaTaskId) {
   try {
-    console.log(`Updating ticket ${ticketId} with Asana Task ID: ${asanaTaskId}`);
+    console.log(
+      `Updating ticket ${ticketId} with Asana Task ID: ${asanaTaskId}`,
+    );
     const response = await fetch(
       `https://api.intercom.io/tickets/${ticketId}`,
       {
@@ -435,13 +469,16 @@ async function updateTicketAttribute(ticketId, asanaTaskId) {
             'Asana Task ID': asanaTaskId, // Use exact field name with spaces
           },
         }),
-      }
+      },
     );
 
     if (response.ok) {
       const data = await response.json();
       console.log('✓ Successfully updated ticket with Asana task ID');
-      console.log('Updated ticket attributes:', data.ticket_attributes?.['Asana Task ID']);
+      console.log(
+        'Updated ticket attributes:',
+        data.ticket_attributes?.['Asana Task ID'],
+      );
       return true;
     } else {
       const errorData = await response.json();
@@ -474,7 +511,7 @@ async function updateTicketStatus(ticketId, status) {
             'Ticket Status': status,
           },
         }),
-      }
+      },
     );
 
     if (response.ok) {
@@ -511,7 +548,7 @@ async function updateTicketAsanaStatus(ticketId, status) {
             'Asana Status': status,
           },
         }),
-      }
+      },
     );
 
     if (response.ok) {
@@ -530,35 +567,42 @@ async function updateTicketAsanaStatus(ticketId, status) {
 
 // Helper function to update Intercom ticket state ID based on label or category
 // Optionally accepts ticket type ID for filtering states and shouldClose to close ticket in same request
-async function updateTicketStateId(ticketId, labelOrCategory, ticketTypeId = null, shouldClose = false) {
+async function updateTicketStateId(
+  ticketId,
+  labelOrCategory,
+  ticketTypeId = null,
+  shouldClose = false,
+) {
   try {
     const stateId = await getTicketStateId(labelOrCategory, ticketTypeId);
 
     if (!stateId) {
       console.error(
-        `✗ Could not find ticket state ID for: "${labelOrCategory}"${ticketTypeId ? ` (ticket type: ${ticketTypeId})` : ''}`
+        `✗ Could not find ticket state ID for: "${labelOrCategory}"${ticketTypeId ? ` (ticket type: ${ticketTypeId})` : ''}`,
       );
-      
+
       // Show available states from cache
       const states = await initializeTicketStates();
       if (states && states.length > 0) {
         // Filter by ticket type if provided
-        const applicableStates = ticketTypeId 
-          ? states.filter(state => 
-              state.ticket_types?.data?.some(type => String(type.id) === String(ticketTypeId))
+        const applicableStates = ticketTypeId
+          ? states.filter((state) =>
+              state.ticket_types?.data?.some(
+                (type) => String(type.id) === String(ticketTypeId),
+              ),
             )
           : states;
-        
+
         console.error(
           `Available states${ticketTypeId ? ` for ticket type ${ticketTypeId}` : ''}:`,
-          applicableStates.map((s) => s.internal_label).join(', ')
+          applicableStates.map((s) => s.internal_label).join(', '),
         );
       }
       return false;
     }
 
     console.log(
-      `Updating ticket ${ticketId} ticket_state_id to: "${stateId}" (${labelOrCategory})${shouldClose ? ' and closing ticket' : ''}`
+      `Updating ticket ${ticketId} ticket_state_id to: "${stateId}" (${labelOrCategory})${shouldClose ? ' and closing ticket' : ''}`,
     );
 
     // Build request body - combine state update and close in one request
@@ -582,12 +626,12 @@ async function updateTicketStateId(ticketId, labelOrCategory, ticketTypeId = nul
           Accept: 'application/json',
         },
         body: JSON.stringify(requestBody),
-      }
+      },
     );
 
     if (response.ok) {
       console.log(
-        `✓ Successfully updated ticket_state_id to "${stateId}" (${labelOrCategory})${shouldClose ? ' and closed ticket' : ''}`
+        `✓ Successfully updated ticket_state_id to "${stateId}" (${labelOrCategory})${shouldClose ? ' and closed ticket' : ''}`,
       );
       return true;
     } else {
@@ -635,7 +679,7 @@ async function updateTicketDueDate(ticketId, asanaDateValue) {
 
     const unixTimestamp = Math.floor(date.getTime() / 1000);
     console.log(
-      `  Updating ticket ${ticketId} Due Date to: "${dateString}" (Unix: ${unixTimestamp})`
+      `  Updating ticket ${ticketId} Due Date to: "${dateString}" (Unix: ${unixTimestamp})`,
     );
 
     const response = await fetch(
@@ -653,7 +697,7 @@ async function updateTicketDueDate(ticketId, asanaDateValue) {
             'Due Date': unixTimestamp,
           },
         }),
-      }
+      },
     );
 
     if (response.ok) {
@@ -722,7 +766,7 @@ async function getAsanaEnumOptionId(fieldGid, optionName) {
           Authorization: `Bearer ${ASANA_TOKEN}`,
           Accept: 'application/json',
         },
-      }
+      },
     );
 
     if (response.ok) {
@@ -731,21 +775,21 @@ async function getAsanaEnumOptionId(fieldGid, optionName) {
 
       // Find the option that matches the name
       const matchingOption = enumOptions.find(
-        (option) => option.name === optionName
+        (option) => option.name === optionName,
       );
 
       if (matchingOption) {
         console.log(
-          `Found enum option ID for "${optionName}": ${matchingOption.gid}`
+          `Found enum option ID for "${optionName}": ${matchingOption.gid}`,
         );
         return matchingOption.gid;
       } else {
         console.warn(
-          `No enum option found for "${optionName}" in field ${fieldGid}`
+          `No enum option found for "${optionName}" in field ${fieldGid}`,
         );
         console.warn(
           'Available options:',
-          enumOptions.map((o) => o.name).join(', ')
+          enumOptions.map((o) => o.name).join(', '),
         );
         return null;
       }
@@ -768,7 +812,7 @@ async function getAsanaCustomFields(projectId = ASANA_PROJECT) {
           Authorization: `Bearer ${ASANA_TOKEN}`,
           Accept: 'application/json',
         },
-      }
+      },
     );
 
     if (response.ok) {
@@ -793,7 +837,7 @@ async function getAsanaSections(projectId = ASANA_PROJECT) {
           Authorization: `Bearer ${ASANA_TOKEN}`,
           Accept: 'application/json',
         },
-      }
+      },
     );
 
     if (response.ok) {
@@ -816,13 +860,16 @@ async function getAsanaSectionId(sectionName, projectId = ASANA_PROJECT) {
       return null;
     }
 
-    const section = sections.find(s => s.name === sectionName);
+    const section = sections.find((s) => s.name === sectionName);
     if (section) {
       console.log(`✓ Found section "${sectionName}" with ID: ${section.gid}`);
       return section.gid;
     } else {
       console.warn(`⚠ Section "${sectionName}" not found in project`);
-      console.warn('Available sections:', sections.map(s => s.name).join(', '));
+      console.warn(
+        'Available sections:',
+        sections.map((s) => s.name).join(', '),
+      );
       return null;
     }
   } catch (error) {
@@ -830,8 +877,6 @@ async function getAsanaSectionId(sectionName, projectId = ASANA_PROJECT) {
     return null;
   }
 }
-
-
 
 // Helper function to initialize custom field mappings
 // Can accept already-fetched customFieldSettings to avoid duplicate API calls
@@ -846,19 +891,21 @@ async function initializeCustomFieldMappings(customFieldSettings = null) {
     if (!customFieldSettings || customFieldSettings.length === 0) {
       console.warn('⚠ No custom fields found in Asana project');
       console.warn(
-        'Custom field syncing will be disabled. Please add custom fields to your Asana project.'
+        'Custom field syncing will be disabled. Please add custom fields to your Asana project.',
       );
       return null;
     }
 
     const fieldTypes = {};
-    
+
     // Track critical system fields
     let hasIntercomConversationId = false;
     let hasTicketStatus = false;
 
     // Map all custom fields dynamically (no hardcoded list)
-    console.log(`Mapping ${customFieldSettings.length} custom fields from Asana...`);
+    console.log(
+      `Mapping ${customFieldSettings.length} custom fields from Asana...`,
+    );
     customFieldSettings.forEach((setting) => {
       const fieldName = setting.custom_field.name;
       const fieldGid = setting.custom_field.gid;
@@ -868,13 +915,19 @@ async function initializeCustomFieldMappings(customFieldSettings = null) {
       if (fieldName === 'Intercom Conversation ID') {
         hasIntercomConversationId = true;
         ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID = fieldGid;
-        console.log(`✓ Mapped critical field: "${fieldName}" → ${fieldGid} (type: ${fieldType})`);
+        console.log(
+          `✓ Mapped critical field: "${fieldName}" → ${fieldGid} (type: ${fieldType})`,
+        );
       } else if (fieldName === 'Ticket Status') {
         hasTicketStatus = true;
         ASANA_CUSTOM_FIELDS.TICKET_STATUS = fieldGid;
-        console.log(`✓ Mapped critical field: "${fieldName}" → ${fieldGid} (type: ${fieldType})`);
+        console.log(
+          `✓ Mapped critical field: "${fieldName}" → ${fieldGid} (type: ${fieldType})`,
+        );
       } else {
-        console.log(`✓ Mapped: "${fieldName}" → ${fieldGid} (type: ${fieldType})`);
+        console.log(
+          `✓ Mapped: "${fieldName}" → ${fieldGid} (type: ${fieldType})`,
+        );
       }
 
       // Store all field types for ALL fields (including system fields)
@@ -888,23 +941,23 @@ async function initializeCustomFieldMappings(customFieldSettings = null) {
     if (!hasIntercomConversationId) {
       console.warn('\n⚠⚠⚠ CRITICAL WARNING ⚠⚠⚠');
       console.warn(
-        'The "Intercom Conversation ID" field is REQUIRED for webhook sync!'
+        'The "Intercom Conversation ID" field is REQUIRED for webhook sync!',
       );
       console.warn(
-        'Without this field, Asana webhooks cannot update Intercom tickets.'
+        'Without this field, Asana webhooks cannot update Intercom tickets.',
       );
       console.warn(
-        'Please create a TEXT field named "Intercom Conversation ID" in your Asana project.'
+        'Please create a TEXT field named "Intercom Conversation ID" in your Asana project.',
       );
       console.warn('⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠\n');
     }
 
     if (!hasTicketStatus) {
       console.warn(
-        '⚠️ WARNING: "Ticket Status" field not found in Asana project'
+        '⚠️ WARNING: "Ticket Status" field not found in Asana project',
       );
       console.warn(
-        '   Please add "Ticket Status" enum field to your Asana project for status sync'
+        '   Please add "Ticket Status" enum field to your Asana project for status sync',
       );
     }
 
@@ -931,9 +984,10 @@ function isValidUrl(string) {
   }
 }
 
-// Helper function to format date for Asana as text in GMT+6 timezone
+// Helper function to format date for Asana as text
+// Uses ticket "Timezone" custom attribute: "GMT+6" or "GMT+5"
 // Format: M/D/YYYY, h:mm AM/PM
-function formatDateForAsana(dateValue) {
+function formatDateForAsana(dateValue, timezoneValue) {
   if (!dateValue) return null;
 
   try {
@@ -961,9 +1015,11 @@ function formatDateForAsana(dateValue) {
       return null;
     }
 
-    // Format to GMT+6 timezone (Asia/Dhaka): M/D/YYYY, h:mm AM/PM
+    // Use ticket Timezone: GMT+5 -> Asia/Karachi, GMT+6 (default) -> Asia/Dhaka
+    const timeZone =
+      timezoneValue === 'GMT+5' ? 'Asia/Karachi' : 'Asia/Dhaka';
     const options = {
-      timeZone: 'Asia/Dhaka',
+      timeZone,
       year: 'numeric',
       month: 'numeric',
       day: 'numeric',
@@ -1030,7 +1086,7 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
     if (!isValidUrl(attachmentUrl)) {
       console.error('Invalid attachment URL:', attachmentUrl);
       console.log(
-        'The attachment field appears to be an ID or invalid URL. Please provide a full URL.'
+        'The attachment field appears to be an ID or invalid URL. Please provide a full URL.',
       );
       return null;
     }
@@ -1045,7 +1101,7 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
     if (!fileResponse.ok) {
       console.error(
         'Failed to download attachment. Status:',
-        fileResponse.status
+        fileResponse.status,
       );
       console.error('Status Text:', fileResponse.statusText);
       return null;
@@ -1089,7 +1145,7 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
           ...formData.getHeaders(),
         },
         body: formData,
-      }
+      },
     );
 
     if (asanaResponse.ok) {
@@ -1116,7 +1172,7 @@ async function uploadAttachmentToAsana(taskId, attachmentUrl) {
       console.error(
         'Response status:',
         asanaResponse.status,
-        asanaResponse.statusText
+        asanaResponse.statusText,
       );
       console.error('======================================');
       return null;
@@ -1183,7 +1239,7 @@ app.get('/asana-custom-fields', async (req, res) => {
 app.get('/webhook-info', (req, res) => {
   const webhookUrl = `${req.protocol}://${req.get('host')}/asana-webhook-prod`;
   const intercomWebhookUrl = `${req.protocol}://${req.get(
-    'host'
+    'host',
   )}/intercom-webhook`;
 
   res.json({
@@ -1266,7 +1322,10 @@ app.post('/intercom-webhook', async (req, res) => {
 
       if (!asanaTaskId) {
         console.log('  ⚠ No Asana task ID found for this ticket');
-        console.log('  Ticket attributes:', Object.keys(ticket?.ticket_attributes || {}).join(', '));
+        console.log(
+          '  Ticket attributes:',
+          Object.keys(ticket?.ticket_attributes || {}).join(', '),
+        );
         console.log('  Skipping note sync - ticket not linked to Asana');
         return res.status(200).send();
       }
@@ -1282,7 +1341,7 @@ app.post('/intercom-webhook', async (req, res) => {
       // Check if note was created by an integration app (to prevent loop)
       if (appPackageCode) {
         console.log(
-          `  ℹ Skipping - note was created by app package: ${appPackageCode} (preventing loop)`
+          `  ℹ Skipping - note was created by app package: ${appPackageCode} (preventing loop)`,
         );
         return res.status(200).send();
       }
@@ -1297,11 +1356,15 @@ app.post('/intercom-webhook', async (req, res) => {
         .trim();
 
       // Check if this note was created by the integration (to prevent loop)
-      if (plainTextBody.startsWith('[Asana Comment by') || 
-          plainTextBody.startsWith('[Asana File Sync]') ||
-          plainTextBody.startsWith('[File Sync from Intercom to Asana]')) {
+      // Use includes() instead of startsWith() because Intercom may rewrite HTML
+      if (
+        plainTextBody.includes('[Asana Comment by') ||
+        plainTextBody.includes('[Asana File Sync]') ||
+        plainTextBody.includes('[File Sync from Intercom to Asana]') ||
+        plainTextBody.includes('[Intercom Note by')
+      ) {
         console.log(
-          '  ℹ Skipping - note was synced from Asana or file sync (preventing loop)'
+          '  ℹ Skipping - note was synced from Asana or file sync (preventing loop)',
         );
         return res.status(200).send();
       }
@@ -1324,7 +1387,7 @@ app.post('/intercom-webhook', async (req, res) => {
                 text: commentBody,
               },
             }),
-          }
+          },
         );
 
         if (asanaResponse.ok) {
@@ -1336,24 +1399,28 @@ app.post('/intercom-webhook', async (req, res) => {
           console.error('  ✗ Failed to post note to Asana:', errorData);
         }
       } else {
-        console.log('  ℹ No text content in note, checking for attachments only');
+        console.log(
+          '  ℹ No text content in note, checking for attachments only',
+        );
       }
 
       // Check for attachments in all possible places
       const allAttachmentUrls = [];
-      
+
       // 1. ticketPart.attachments array
       const directAttachments = ticketPart.attachments || [];
       for (const a of directAttachments) {
-        if (a?.url && !allAttachmentUrls.includes(a.url)) allAttachmentUrls.push(a.url);
+        if (a?.url && !allAttachmentUrls.includes(a.url))
+          allAttachmentUrls.push(a.url);
       }
-      
+
       // 2. ticketPart.attachment_urls array
       const directUrls = ticketPart.attachment_urls || [];
       for (const url of directUrls) {
-        if (url && !allAttachmentUrls.includes(url)) allAttachmentUrls.push(url);
+        if (url && !allAttachmentUrls.includes(url))
+          allAttachmentUrls.push(url);
       }
-      
+
       // 3. Extract URLs from HTML body (<img src>, <a href>)
       if (noteBody) {
         // Match <img src="..."> tags
@@ -1365,7 +1432,7 @@ app.post('/intercom-webhook', async (req, res) => {
             allAttachmentUrls.push(url);
           }
         }
-        
+
         // Match <a href="..."> download links
         const linkRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>/gi;
         let linkMatch;
@@ -1376,35 +1443,45 @@ app.post('/intercom-webhook', async (req, res) => {
           }
         }
       }
-      
+
       console.log('  Direct attachments:', directAttachments.length);
       console.log('  Direct attachment_urls:', directUrls.length);
       console.log('  Total attachment URLs found:', allAttachmentUrls.length);
       if (allAttachmentUrls.length > 0) {
         console.log('  URLs:', allAttachmentUrls);
       }
-      
+
       if (allAttachmentUrls.length > 0) {
-        console.log(`  📎 Uploading ${allAttachmentUrls.length} attachment(s) to Asana task...`);
-        
+        console.log(
+          `  📎 Uploading ${allAttachmentUrls.length} attachment(s) to Asana task...`,
+        );
+
         for (let i = 0; i < allAttachmentUrls.length; i++) {
           const attachmentUrl = allAttachmentUrls[i];
-          
+
           try {
             console.log(`    Uploading attachment ${i + 1}...`);
             console.log(`    URL: ${attachmentUrl}`);
-            const permanentUrl = await uploadAttachmentToAsana(asanaTaskId, attachmentUrl);
-            
+            const permanentUrl = await uploadAttachmentToAsana(
+              asanaTaskId,
+              attachmentUrl,
+            );
+
             if (permanentUrl) {
-              console.log(`    ✓ Successfully uploaded attachment ${i + 1} to Asana`);
+              console.log(
+                `    ✓ Successfully uploaded attachment ${i + 1} to Asana`,
+              );
             } else {
               console.log(`    ✗ Failed to upload attachment ${i + 1}`);
             }
           } catch (error) {
-            console.error(`    ✗ Error uploading attachment ${i + 1}:`, error.message);
+            console.error(
+              `    ✗ Error uploading attachment ${i + 1}:`,
+              error.message,
+            );
           }
         }
-        
+
         console.log('  ✓ Finished uploading attachments');
       }
     }
@@ -1442,7 +1519,10 @@ app.post('/intercom-webhook', async (req, res) => {
 
       if (!asanaTaskId) {
         console.log('  ⚠ No Asana task ID found for this ticket');
-        console.log('  Ticket attributes:', Object.keys(ticket?.ticket_attributes || {}).join(', '));
+        console.log(
+          '  Ticket attributes:',
+          Object.keys(ticket?.ticket_attributes || {}).join(', '),
+        );
         console.log('  Skipping note sync - ticket not linked to Asana');
         return res.status(200).send();
       }
@@ -1471,7 +1551,7 @@ app.post('/intercom-webhook', async (req, res) => {
       // Check if note was created by an integration app (to prevent loop)
       if (latestNote.app_package_code) {
         console.log(
-          `  ℹ Skipping - note was created by app package: ${latestNote.app_package_code} (preventing loop)`
+          `  ℹ Skipping - note was created by app package: ${latestNote.app_package_code} (preventing loop)`,
         );
         return res.status(200).send();
       }
@@ -1486,11 +1566,15 @@ app.post('/intercom-webhook', async (req, res) => {
         .trim();
 
       // Check if this note was created by the integration (to prevent loop)
-      if (plainTextBody.startsWith('[Asana Comment by') || 
-          plainTextBody.startsWith('[Asana File Sync]') ||
-          plainTextBody.startsWith('[File Sync from Intercom to Asana]')) {
+      // Use includes() instead of startsWith() because Intercom may rewrite HTML
+      if (
+        plainTextBody.includes('[Asana Comment by') ||
+        plainTextBody.includes('[Asana File Sync]') ||
+        plainTextBody.includes('[File Sync from Intercom to Asana]') ||
+        plainTextBody.includes('[Intercom Note by')
+      ) {
         console.log(
-          '  ℹ Skipping - note was synced from Asana or file sync (preventing loop)'
+          '  ℹ Skipping - note was synced from Asana or file sync (preventing loop)',
         );
         return res.status(200).send();
       }
@@ -1515,7 +1599,7 @@ app.post('/intercom-webhook', async (req, res) => {
               text: commentBody,
             },
           }),
-        }
+        },
       );
 
       if (asanaResponse.ok) {
@@ -1530,7 +1614,7 @@ app.post('/intercom-webhook', async (req, res) => {
       // Check for attachments in multiple places
       const legacyDirectAttachments = latestNote.attachments || [];
       const legacyAttachmentUrlsFromBody = [];
-      
+
       // Extract image/file URLs from HTML body
       if (latestNote.body) {
         const imgRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
@@ -1541,42 +1625,57 @@ app.post('/intercom-webhook', async (req, res) => {
             legacyAttachmentUrlsFromBody.push(url);
           }
         }
-        
-        const linkRegex = /<a[^>]+href=["']([^"']*intercom-attachments[^"']*)["'][^>]*>/gi;
+
+        const linkRegex =
+          /<a[^>]+href=["']([^"']*intercom-attachments[^"']*)["'][^>]*>/gi;
         let linkMatch;
         while ((linkMatch = linkRegex.exec(latestNote.body)) !== null) {
           const url = linkMatch[1];
-          if (url && isValidUrl(url) && !legacyAttachmentUrlsFromBody.includes(url)) {
+          if (
+            url &&
+            isValidUrl(url) &&
+            !legacyAttachmentUrlsFromBody.includes(url)
+          ) {
             legacyAttachmentUrlsFromBody.push(url);
           }
         }
       }
-      
+
       const legacyAllAttachmentUrls = [
-        ...legacyDirectAttachments.map(a => a.url).filter(Boolean),
+        ...legacyDirectAttachments.map((a) => a.url).filter(Boolean),
         ...legacyAttachmentUrlsFromBody,
       ];
-      
+
       if (legacyAllAttachmentUrls.length > 0) {
-        console.log(`  📎 Uploading ${legacyAllAttachmentUrls.length} attachment(s) to Asana task...`);
-        
+        console.log(
+          `  📎 Uploading ${legacyAllAttachmentUrls.length} attachment(s) to Asana task...`,
+        );
+
         for (let i = 0; i < legacyAllAttachmentUrls.length; i++) {
           const attachmentUrl = legacyAllAttachmentUrls[i];
-          
+
           try {
             console.log(`    Uploading attachment ${i + 1}...`);
-            const permanentUrl = await uploadAttachmentToAsana(asanaTaskId, attachmentUrl);
-            
+            const permanentUrl = await uploadAttachmentToAsana(
+              asanaTaskId,
+              attachmentUrl,
+            );
+
             if (permanentUrl) {
-              console.log(`    ✓ Successfully uploaded attachment ${i + 1} to Asana`);
+              console.log(
+                `    ✓ Successfully uploaded attachment ${i + 1} to Asana`,
+              );
             } else {
               console.log(`    ✗ Failed to upload attachment ${i + 1}`);
             }
           } catch (error) {
-            console.error(`    ✗ Error uploading attachment ${i + 1}:`, error.message);
+            console.error(
+              `    ✗ Error uploading attachment ${i + 1}:`,
+              error.message,
+            );
           }
         }
-        
+
         console.log('  ✓ Finished uploading attachments');
       }
     } else {
@@ -1658,10 +1757,11 @@ app.post('/submit', async (req, res) => {
 
   const conversationId = req.body.conversation?.id;
   const ticketId = req.body.conversation?.ticket?.id;
-  
+
   // Get selected project ID from dropdown (or fallback to env variable)
-  const selectedProjectId = req.body.input_values?.project_dropdown || ASANA_PROJECT;
-  
+  const selectedProjectId =
+    req.body.input_values?.project_dropdown || ASANA_PROJECT;
+
   console.log('Extracted conversation ID:', conversationId);
   console.log('Extracted ticket ID:', ticketId);
   console.log('Selected project ID:', selectedProjectId);
@@ -1674,7 +1774,7 @@ app.post('/submit', async (req, res) => {
       console.log('=== SUBMIT ROUTE DEBUG ===');
       console.log('Conversation ID:', conversationId);
       console.log('Ticket ID:', ticketId);
-      
+
       if (!ticketId) {
         console.error('❌ No ticket ID found in request body');
         throw new Error('No ticket found for this conversation');
@@ -1682,33 +1782,46 @@ app.post('/submit', async (req, res) => {
 
       // Fetch all required data in parallel for optimal performance
       console.log('📡 Fetching all required data in parallel...');
-      
+
       const contactId = req.body.contact?.id || req.body.customer?.id;
-      const contactNameFromBody = req.body.contact?.name || req.body.customer?.name;
-      
+      const contactNameFromBody =
+        req.body.contact?.name || req.body.customer?.name;
+
       console.log('Contact ID:', contactId);
       console.log('Contact Name from body:', contactNameFromBody);
 
-      const [ticket, asanaCustomFieldSettings, contactNameFromApi] = await Promise.all([
-        getTicket(ticketId),
-        getAsanaCustomFields(selectedProjectId), // Pass selected project ID
-        // Only fetch contact name if not in request body and we have a contact ID
-        !contactNameFromBody && contactId ? getContactName(contactId) : Promise.resolve(null),
-      ]);
-      
+      const [ticket, asanaCustomFieldSettings, contactNameFromApi] =
+        await Promise.all([
+          getTicket(ticketId),
+          getAsanaCustomFields(selectedProjectId), // Pass selected project ID
+          // Only fetch contact name if not in request body and we have a contact ID
+          !contactNameFromBody && contactId
+            ? getContactName(contactId)
+            : Promise.resolve(null),
+        ]);
+
       console.log('✓ Promise.all completed');
-      console.log('Ticket result:', ticket ? 'Fetched successfully' : '❌ NULL/UNDEFINED');
-      console.log('Asana fields result:', asanaCustomFieldSettings ? `${asanaCustomFieldSettings.length} fields` : '❌ NULL/UNDEFINED');
+      console.log(
+        'Ticket result:',
+        ticket ? 'Fetched successfully' : '❌ NULL/UNDEFINED',
+      );
+      console.log(
+        'Asana fields result:',
+        asanaCustomFieldSettings
+          ? `${asanaCustomFieldSettings.length} fields`
+          : '❌ NULL/UNDEFINED',
+      );
       console.log('Contact name result:', contactNameFromApi || 'Not fetched');
 
       // Ensure custom fields are initialized (pass already-fetched settings to avoid refetch)
       // if (!customFieldsCache) {
-        console.log('Custom fields not initialized, initializing now...');
-        await initializeCustomFieldMappings(asanaCustomFieldSettings);
+      console.log('Custom fields not initialized, initializing now...');
+      await initializeCustomFieldMappings(asanaCustomFieldSettings);
       // }
 
       // Determine contact name
-      const contactName = contactNameFromBody || contactNameFromApi || 'Unknown Contact';
+      const contactName =
+        contactNameFromBody || contactNameFromApi || 'Unknown Contact';
 
       // Validate ticket was fetched successfully
       if (!ticket) {
@@ -1717,7 +1830,7 @@ app.post('/submit', async (req, res) => {
         console.error('Ticket result:', ticket);
         throw new Error('Failed to fetch ticket details');
       }
-      
+
       console.log('✓ Ticket validation passed');
       console.log('Ticket ID:', ticket.id || 'N/A');
       console.log('Ticket has attributes:', !!ticket.ticket_attributes);
@@ -1758,10 +1871,11 @@ app.post('/submit', async (req, res) => {
 
       // Get the actual Intercom ticket state (not from custom attributes)
       // Intercom ticket has ticket_state object with name, category, internal_label, etc.
-      const ticketStatus = ticket?.ticket_state?.name || 
-                          ticket?.ticket_state?.internal_label || 
-                          ticket?.state || 
-                          'Submitted';
+      const ticketStatus =
+        ticket?.ticket_state?.name ||
+        ticket?.ticket_state?.internal_label ||
+        ticket?.state ||
+        'Submitted';
 
       console.log('Ticket Status from Intercom ticket_state:', ticketStatus);
       console.log('\n===== DYNAMIC FIELD SYNC FROM INTERCOM TO ASANA =====');
@@ -1772,7 +1886,7 @@ app.post('/submit', async (req, res) => {
 
       // Handle file upload fields for attachments
       let attachmentUrls = [];
-      
+
       console.log('\n===== FILE UPLOAD PROCESSING FROM TICKET =====');
 
       // Build basic task notes
@@ -1787,8 +1901,13 @@ Contact Information:
 
       // Process each Asana custom field
       if (asanaCustomFieldSettings && asanaCustomFieldSettings.length > 0) {
-        console.log(`Processing ${asanaCustomFieldSettings.length} custom fields from Asana...`);
-        console.log('Available Intercom ticket attributes:', Object.keys(ticketAttrs).join(', '));
+        console.log(
+          `Processing ${asanaCustomFieldSettings.length} custom fields from Asana...`,
+        );
+        console.log(
+          'Available Intercom ticket attributes:',
+          Object.keys(ticketAttrs).join(', '),
+        );
 
         for (const setting of asanaCustomFieldSettings) {
           const fieldName = setting.custom_field.name;
@@ -1797,13 +1916,17 @@ Contact Information:
 
           // Skip Ticket Status field - it's reserved for Intercom ticket status management
           if (fieldName === 'Ticket Status') {
-            console.log(`  ⊘ Skipping "${fieldName}" - reserved for ticket status management`);
+            console.log(
+              `  ⊘ Skipping "${fieldName}" - reserved for ticket status management`,
+            );
             continue;
           }
 
           // Skip Intercom Conversation ID - it's system field
           if (fieldName === 'Intercom Conversation ID') {
-            console.log(`  ⊘ Skipping "${fieldName}" - system field (will be added separately)`);
+            console.log(
+              `  ⊘ Skipping "${fieldName}" - system field (will be added separately)`,
+            );
             continue;
           }
 
@@ -1816,57 +1939,99 @@ Contact Information:
             continue;
           }
 
-          if (intercomValue !== undefined && intercomValue !== null && intercomValue !== '') {
-            console.log(`  ✓ Found "${fieldName}" in Intercom with value:`, 
-              typeof intercomValue === 'object' ? JSON.stringify(intercomValue).substring(0, 100) + '...' : intercomValue);
+          if (
+            intercomValue !== undefined &&
+            intercomValue !== null &&
+            intercomValue !== ''
+          ) {
+            console.log(
+              `  ✓ Found "${fieldName}" in Intercom with value:`,
+              typeof intercomValue === 'object'
+                ? JSON.stringify(intercomValue).substring(0, 100) + '...'
+                : intercomValue,
+            );
 
             // First, check if Intercom value is a file/attachment (priority check)
-            if (Array.isArray(intercomValue) && intercomValue.length > 0 && intercomValue[0]?.url) {
+            if (
+              Array.isArray(intercomValue) &&
+              intercomValue.length > 0 &&
+              intercomValue[0]?.url
+            ) {
               // This is a file upload field (array of files)
-              console.log(`    → Detected file upload field with ${intercomValue.length} file(s)`);
+              console.log(
+                `    → Detected file upload field with ${intercomValue.length} file(s)`,
+              );
               const fileUrls = extractAttachmentUrls(intercomValue, fieldName);
-              console.log(`    → Extracted ${fileUrls.length} URL(s):`, fileUrls);
+              console.log(
+                `    → Extracted ${fileUrls.length} URL(s):`,
+                fileUrls,
+              );
               attachmentUrls.push(...fileUrls);
             } else if (typeof intercomValue === 'object' && intercomValue.url) {
               // Single file object
               console.log(`    → Detected single file upload`);
               const fileUrls = extractAttachmentUrls(intercomValue, fieldName);
-              console.log(`    → Extracted ${fileUrls.length} URL(s):`, fileUrls);
+              console.log(
+                `    → Extracted ${fileUrls.length} URL(s):`,
+                fileUrls,
+              );
               attachmentUrls.push(...fileUrls);
             }
             // If Asana field is enum, we must look up the option ID
             else if (fieldType === 'enum') {
-              const enumOptionId = await getAsanaEnumOptionId(fieldGid, String(intercomValue));
+              const enumOptionId = await getAsanaEnumOptionId(
+                fieldGid,
+                String(intercomValue),
+              );
               if (enumOptionId) {
                 customFields[fieldGid] = enumOptionId;
-                console.log(`    → Syncing as enum: ${intercomValue} (ID: ${enumOptionId})`);
+                console.log(
+                  `    → Syncing as enum: ${intercomValue} (ID: ${enumOptionId})`,
+                );
               } else {
-                console.log(`    ⚠ Could not find enum option "${intercomValue}" in Asana field, skipping`);
+                console.log(
+                  `    ⚠ Could not find enum option "${intercomValue}" in Asana field, skipping`,
+                );
               }
             }
             // If Asana field is date type, format as YYYY-MM-DD
             else if (fieldType === 'date') {
-              const formattedDateField = formatDateForAsanaDateField(intercomValue);
+              const formattedDateField =
+                formatDateForAsanaDateField(intercomValue);
               if (formattedDateField) {
                 customFields[fieldGid] = formattedDateField;
-                console.log(`    → Syncing as date field: ${formattedDateField}`);
+                console.log(
+                  `    → Syncing as date field: ${formattedDateField}`,
+                );
               } else {
-                console.log(`    ⚠ Could not format date "${intercomValue}", skipping`);
+                console.log(
+                  `    ⚠ Could not format date "${intercomValue}", skipping`,
+                );
               }
             }
             // For all other cases (text, number, etc.), handle based on field name pattern or as text
             else {
               // Check if it's a date/time field by name pattern (for text fields in Asana)
-              if ((fieldName.toLowerCase().includes('date') || fieldName.toLowerCase().includes('time')) 
-                  && typeof intercomValue !== 'object') {
-                const formattedDate = formatDateForAsana(intercomValue);
+              if (
+                (fieldName.toLowerCase().includes('date') ||
+                  fieldName.toLowerCase().includes('time')) &&
+                typeof intercomValue !== 'object'
+              ) {
+                const formattedDate = formatDateForAsana(
+                  intercomValue,
+                  ticketAttrs['Timezone'],
+                );
                 if (formattedDate) {
                   customFields[fieldGid] = formattedDate;
-                  console.log(`    → Syncing as formatted date text: ${formattedDate}`);
+                  console.log(
+                    `    → Syncing as formatted date text: ${formattedDate}`,
+                  );
                 } else {
                   // Fallback to string value
                   customFields[fieldGid] = String(intercomValue);
-                  console.log(`    → Syncing as text: ${String(intercomValue)}`);
+                  console.log(
+                    `    → Syncing as text: ${String(intercomValue)}`,
+                  );
                 }
               } else {
                 // Default: sync as text/string (works for text and number fields in Asana)
@@ -1875,7 +2040,9 @@ Contact Information:
               }
             }
           } else {
-            console.log(`  ○ "${fieldName}" not found or empty in Intercom ticket attributes`);
+            console.log(
+              `  ○ "${fieldName}" not found or empty in Intercom ticket attributes`,
+            );
           }
         }
       }
@@ -1883,7 +2050,7 @@ Contact Information:
       if (attachmentUrls.length > 0) {
         console.log(
           `\nFinal attachment URLs to upload (${attachmentUrls.length}):`,
-          attachmentUrls
+          attachmentUrls,
         );
       } else {
         console.log('\nNo file uploads to process for this task');
@@ -1896,32 +2063,32 @@ Contact Information:
         console.log(
           'Looking up enum option ID for Ticket Status:',
           ticketStatus,
-          ticketStatus === 'Submitted' ? '(default)' : '(from Intercom)'
+          ticketStatus === 'Submitted' ? '(default)' : '(from Intercom)',
         );
         const enumOptionId = await getAsanaEnumOptionId(
           ASANA_CUSTOM_FIELDS.TICKET_STATUS,
-          ticketStatus
+          ticketStatus,
         );
         if (enumOptionId) {
           customFields[ASANA_CUSTOM_FIELDS.TICKET_STATUS] = enumOptionId;
           console.log(
             '✓ Adding Ticket Status to Asana custom field:',
-            ticketStatus
+            ticketStatus,
           );
         } else {
           console.warn('Could not find enum option ID for:', ticketStatus);
           console.warn(
             'Make sure "' +
               ticketStatus +
-              '" exists as an option in the Ticket Status field in Asana'
+              '" exists as an option in the Ticket Status field in Asana',
           );
         }
       } else if (!ASANA_CUSTOM_FIELDS.TICKET_STATUS) {
         console.warn(
-          '⚠️ WARNING: Ticket Status custom field is not configured in Asana'
+          '⚠️ WARNING: Ticket Status custom field is not configured in Asana',
         );
         console.warn(
-          '   Please add "Ticket Status" enum field to your Asana project for status sync'
+          '   Please add "Ticket Status" enum field to your Asana project for status sync',
         );
       }
 
@@ -1931,14 +2098,14 @@ Contact Information:
           String(conversationId);
         console.log(
           '✓ Adding conversation ID to Asana custom field:',
-          conversationId
+          conversationId,
         );
       } else if (!ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID) {
         console.warn(
-          '⚠ WARNING: "Intercom Conversation ID" custom field NOT configured!'
+          '⚠ WARNING: "Intercom Conversation ID" custom field NOT configured!',
         );
         console.warn(
-          '   Webhook sync will not work without this field. Please add it to your Asana project.'
+          '   Webhook sync will not work without this field. Please add it to your Asana project.',
         );
       }
 
@@ -1946,18 +2113,23 @@ Contact Information:
       if (Object.keys(customFields).length > 0) {
         console.log(
           'Custom field values:',
-          JSON.stringify(customFields, null, 2)
+          JSON.stringify(customFields, null, 2),
         );
       }
 
       // Get the section ID for "CS Inquiry"
       console.log('Fetching section ID for "CS Inquiry"...');
-      const csInquirySectionId = await getAsanaSectionId('CS Inquiry', selectedProjectId);
+      const csInquirySectionId = await getAsanaSectionId(
+        'CS Inquiry',
+        selectedProjectId,
+      );
 
       // Create task name from Reference Number or default to #Unknown
       const referenceNumber = ticketAttrs['Reference Number'];
       const taskName = referenceNumber ? `#${referenceNumber}` : '#Unknown';
-      console.log(`Task name: ${taskName} (Reference Number: ${referenceNumber || 'not found'})`);
+      console.log(
+        `Task name: ${taskName} (Reference Number: ${referenceNumber || 'not found'})`,
+      );
 
       // Create task payload
       const taskPayload = {
@@ -1975,9 +2147,13 @@ Contact Information:
             section: csInquirySectionId,
           },
         ];
-        console.log(`✓ Task will be created in "CS Inquiry" section (${csInquirySectionId})`);
+        console.log(
+          `✓ Task will be created in "CS Inquiry" section (${csInquirySectionId})`,
+        );
       } else {
-        console.warn('⚠ CS Inquiry section not found, task will be created in default section');
+        console.warn(
+          '⚠ CS Inquiry section not found, task will be created in default section',
+        );
       }
 
       // Only add custom_fields if we have any configured
@@ -1987,7 +2163,7 @@ Contact Information:
 
       console.log(
         'Creating Asana task with payload:',
-        JSON.stringify(taskPayload, null, 2)
+        JSON.stringify(taskPayload, null, 2),
       );
 
       // Create Asana task
@@ -2017,10 +2193,10 @@ Contact Information:
         ) {
           console.error('⚠️ Date field error detected!');
           console.error(
-            'This usually means the "Ticket Due Date" field in Asana is not configured as a "date" type.'
+            'This usually means the "Ticket Due Date" field in Asana is not configured as a "date" type.',
           );
           console.error(
-            'Please check the field type in your Asana project settings.'
+            'Please check the field type in your Asana project settings.',
           );
         }
       }
@@ -2039,7 +2215,7 @@ Contact Information:
             console.log(
               `\n--- Processing attachment ${i + 1}/${
                 attachmentUrls.length
-              } ---`
+              } ---`,
             );
             console.log('Attachment URL:', attachmentUrl);
 
@@ -2059,7 +2235,7 @@ Contact Information:
             try {
               const attachmentPermanentUrl = await uploadAttachmentToAsana(
                 asanaTaskId,
-                attachmentUrl
+                attachmentUrl,
               );
 
               if (
@@ -2068,7 +2244,7 @@ Contact Information:
               ) {
                 console.log(
                   '✓ Attachment uploaded successfully. Permanent URL:',
-                  attachmentPermanentUrl
+                  attachmentPermanentUrl,
                 );
                 attachmentResults.push({
                   index: i + 1,
@@ -2078,7 +2254,7 @@ Contact Information:
                 });
               } else {
                 console.log(
-                  '✗ Attachment upload failed - no permanent URL returned'
+                  '✗ Attachment upload failed - no permanent URL returned',
                 );
                 attachmentResults.push({
                   index: i + 1,
@@ -2101,7 +2277,7 @@ Contact Information:
           console.log(
             `Attachment processing complete: ${
               attachmentResults.filter((r) => r.status === 'success').length
-            }/${attachmentUrls.length} successful`
+            }/${attachmentUrls.length} successful`,
           );
         } else {
           console.log('No attachments to process for this task');
@@ -2113,7 +2289,7 @@ Contact Information:
         // Store mapping for webhook callbacks
         asanaTaskToConversation.set(asanaTaskId, conversationId);
         console.log(
-          `Stored mapping: Asana task ${asanaTaskId} → Intercom conversation ${conversationId}`
+          `Stored mapping: Asana task ${asanaTaskId} → Intercom conversation ${conversationId}`,
         );
 
         const components = [
@@ -2143,7 +2319,7 @@ Contact Information:
         // Add attachment status if attachments were processed
         if (attachmentResults.length > 0) {
           const successCount = attachmentResults.filter(
-            (r) => r.status === 'success'
+            (r) => r.status === 'success',
           ).length;
           const totalCount = attachmentResults.length;
           let statusText = '';
@@ -2160,7 +2336,7 @@ Contact Information:
             } else {
               // Only show failure message if we actually tried to upload
               const attemptedCount = attachmentResults.filter(
-                (r) => r.status !== 'invalid_url'
+                (r) => r.status !== 'invalid_url',
               ).length;
               if (attemptedCount > 0) {
                 statusIcon = '❌';
@@ -2204,7 +2380,7 @@ Contact Information:
         res.send(successCanvas);
       } else {
         throw new Error(
-          asanaData.errors?.[0]?.message || 'Failed to create Asana task'
+          asanaData.errors?.[0]?.message || 'Failed to create Asana task',
         );
       }
     } catch (error) {
@@ -2245,8 +2421,7 @@ Contact Information:
       };
       res.send(errorCanvas);
     }
-  } 
-  else {
+  } else {
     res.send(initialCanvas);
   }
 });
@@ -2285,7 +2460,23 @@ app.post('/asana-webhook-prod', async (req, res) => {
     const events = req.body.events || [];
     console.log(`Processing ${events.length} event(s)`);
 
-    for (const event of events) {
+    // Fetch our API user GID once per request (for loop prevention)
+    const apiUserGid = await getAsanaApiUserGid();
+
+    // Track asset GIDs handled by story (comment) events to prevent duplicates
+    // with attachment events in the same webhook call
+    const processedAssetGids = new Set();
+
+    // Sort events: process stories first, then attachments, then task changes
+    // This ensures comment attachments are tracked before the attachment handler runs
+    const sortedEvents = [...events].sort((a, b) => {
+      const order = { story: 0, attachment: 1, task: 2 };
+      const aOrder = order[a.resource?.resource_type] ?? 3;
+      const bOrder = order[b.resource?.resource_type] ?? 3;
+      return aOrder - bOrder;
+    });
+
+    for (const event of sortedEvents) {
       console.log('\nEvent details:');
       console.log('  Action:', event.action);
       console.log('  Resource type:', event.resource?.resource_type);
@@ -2304,16 +2495,13 @@ app.post('/asana-webhook-prod', async (req, res) => {
 
         // Fetch attachment details and conversation ID in parallel
         const [attachmentJson, result] = await Promise.all([
-          fetch(
-            `https://app.asana.com/api/1.0/attachments/${attachmentGid}`,
-            {
-              method: 'GET',
-              headers: {
-                Authorization: `Bearer ${ASANA_TOKEN}`,
-                Accept: 'application/json',
-              },
-            }
-          ).then((r) => (r.ok ? r.json() : null)),
+          fetch(`https://app.asana.com/api/1.0/attachments/${attachmentGid}`, {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${ASANA_TOKEN}`,
+              Accept: 'application/json',
+            },
+          }).then((r) => (r.ok ? r.json() : null)),
           getConversationIdFromTask(taskId),
         ]);
 
@@ -2327,11 +2515,20 @@ app.post('/asana-webhook-prod', async (req, res) => {
 
           console.log('  Attachment name:', attachmentName);
           console.log('  Download URL:', downloadUrl ? 'found' : 'missing');
-          console.log('  Created by:', createdByName);
+          console.log('  Created by:', createdByName, '(GID:', attachment.created_by?.gid, ')');
 
-          // Skip attachments uploaded by our integration (from Intercom sync)
-          // These are uploaded via uploadAttachmentToAsana which uses the ASANA_TOKEN
-          // We detect this by checking if the parent story was from our integration
+          // Skip attachments uploaded by our integration (prevents echo-back loop)
+          if (apiUserGid && attachment.created_by?.gid === apiUserGid) {
+            console.log('  ℹ Skipping - attachment was uploaded by our integration (preventing loop)');
+            continue;
+          }
+
+          // Skip if already handled by the story handler in this same webhook call
+          if (processedAssetGids.has(attachmentGid)) {
+            console.log('  ℹ Skipping - attachment already handled by comment sync (preventing duplicate)');
+            continue;
+          }
+
           if (!downloadUrl) {
             console.log('  ⚠ No download URL for attachment, skipping');
             continue;
@@ -2356,18 +2553,23 @@ app.post('/asana-webhook-prod', async (req, res) => {
                 body: noteBody,
                 attachment_urls: [downloadUrl],
               }),
-            }
+            },
           );
 
           if (intercomResponse.ok) {
             console.log('  ✓ Attachment posted to Intercom conversation');
           } else {
             const errorData = await intercomResponse.json();
-            console.error('  ✗ Failed to post attachment to Intercom:', errorData);
+            console.error(
+              '  ✗ Failed to post attachment to Intercom:',
+              errorData,
+            );
           }
         } else {
-          if (!attachment) console.log('  ⚠ Could not fetch attachment details');
-          if (!result?.conversationId) console.log('  ⚠ No conversation ID found');
+          if (!attachment)
+            console.log('  ⚠ Could not fetch attachment details');
+          if (!result?.conversationId)
+            console.log('  ⚠ No conversation ID found');
         }
       }
 
@@ -2383,16 +2585,13 @@ app.post('/asana-webhook-prod', async (req, res) => {
 
         // Fetch story and conversation in parallel (task ID is already available from event)
         const [storyJson, result] = await Promise.all([
-          fetch(
-            `https://app.asana.com/api/1.0/stories/${storyId}`,
-            {
-              method: 'GET',
-              headers: {
-                Authorization: `Bearer ${ASANA_TOKEN}`,
-                Accept: 'application/json',
-              },
-            }
-          ).then((r) => (r.ok ? r.json() : null)),
+          fetch(`https://app.asana.com/api/1.0/stories/${storyId}`, {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${ASANA_TOKEN}`,
+              Accept: 'application/json',
+            },
+          }).then((r) => (r.ok ? r.json() : null)),
           getConversationIdFromTask(taskId),
         ]);
 
@@ -2408,7 +2607,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
             // Check if this comment was created by the integration (to prevent loop)
             if (story.text.startsWith('[Intercom Note by')) {
               console.log(
-                '  ℹ Skipping - comment was synced from Intercom (preventing loop)'
+                '  ℹ Skipping - comment was synced from Intercom (preventing loop)',
               );
               continue;
             }
@@ -2418,16 +2617,24 @@ app.post('/asana-webhook-prod', async (req, res) => {
               console.log('  Found conversation ID:', conversationId);
 
               // Extract Asana asset IDs from comment text
-              const asanaAssetUrlRegex = /https?:\/\/app\.asana\.com\/app\/asana\/-\/get_asset\?asset_id=(\d+)/g;
+              const asanaAssetUrlRegex =
+                /https?:\/\/app\.asana\.com\/app\/asana\/-\/get_asset\?asset_id=(\d+)/g;
               const assetIds = [];
               let match;
               while ((match = asanaAssetUrlRegex.exec(story.text)) !== null) {
                 assetIds.push(match[1]);
+                // Mark as handled so the attachment handler won't duplicate
+                processedAssetGids.add(match[1]);
               }
-              
+
               // Clean comment text by removing Asana asset URLs
-              let cleanCommentText = story.text.replace(/https?:\/\/app\.asana\.com\/app\/asana\/-\/get_asset\?asset_id=[^\s]*/g, '').trim();
-              
+              let cleanCommentText = story.text
+                .replace(
+                  /https?:\/\/app\.asana\.com\/app\/asana\/-\/get_asset\?asset_id=[^\s]*/g,
+                  '',
+                )
+                .trim();
+
               if (!cleanCommentText) {
                 cleanCommentText = '(attachment only)';
               }
@@ -2435,11 +2642,15 @@ app.post('/asana-webhook-prod', async (req, res) => {
               // Get public download URLs from Asana attachments API
               const attachmentDownloadUrls = [];
               if (assetIds.length > 0) {
-                console.log(`  📎 Found ${assetIds.length} attachment(s) in comment`);
-                
+                console.log(
+                  `  📎 Found ${assetIds.length} attachment(s) in comment`,
+                );
+
                 for (const assetId of assetIds) {
                   try {
-                    console.log(`    Fetching attachment details for asset ${assetId}...`);
+                    console.log(
+                      `    Fetching attachment details for asset ${assetId}...`,
+                    );
                     const attachmentResponse = await fetch(
                       `https://app.asana.com/api/1.0/attachments/${assetId}`,
                       {
@@ -2448,25 +2659,32 @@ app.post('/asana-webhook-prod', async (req, res) => {
                           Authorization: `Bearer ${ASANA_TOKEN}`,
                           Accept: 'application/json',
                         },
-                      }
+                      },
                     );
-                    
+
                     if (attachmentResponse.ok) {
                       const attachmentData = await attachmentResponse.json();
                       const downloadUrl = attachmentData.data?.download_url;
                       const name = attachmentData.data?.name || 'attachment';
-                      
+
                       if (downloadUrl) {
                         attachmentDownloadUrls.push(downloadUrl);
                         console.log(`    ✓ Got download URL for ${name}`);
                       } else {
-                        console.log(`    ⚠ No download_url for asset ${assetId}`);
+                        console.log(
+                          `    ⚠ No download_url for asset ${assetId}`,
+                        );
                       }
                     } else {
-                      console.error(`    ✗ Failed to fetch attachment ${assetId}`);
+                      console.error(
+                        `    ✗ Failed to fetch attachment ${assetId}`,
+                      );
                     }
                   } catch (error) {
-                    console.error(`    ✗ Error fetching attachment ${assetId}:`, error.message);
+                    console.error(
+                      `    ✗ Error fetching attachment ${assetId}:`,
+                      error.message,
+                    );
                   }
                 }
               }
@@ -2486,7 +2704,9 @@ app.post('/asana-webhook-prod', async (req, res) => {
               // Add attachment URLs if we have any
               if (attachmentDownloadUrls.length > 0) {
                 replyBody.attachment_urls = attachmentDownloadUrls;
-                console.log(`  Posting note with ${attachmentDownloadUrls.length} attachment(s)`);
+                console.log(
+                  `  Posting note with ${attachmentDownloadUrls.length} attachment(s)`,
+                );
               }
 
               const intercomResponse = await fetch(
@@ -2499,18 +2719,23 @@ app.post('/asana-webhook-prod', async (req, res) => {
                     Accept: 'application/json',
                   },
                   body: JSON.stringify(replyBody),
-                }
+                },
               );
 
               if (intercomResponse.ok) {
-                console.log('  ✓ Comment posted to Intercom conversation as private note');
+                console.log(
+                  '  ✓ Comment posted to Intercom conversation as private note',
+                );
               } else {
                 const errorData = await intercomResponse.json();
-                console.error('  ✗ Failed to post comment to Intercom:', errorData);
+                console.error(
+                  '  ✗ Failed to post comment to Intercom:',
+                  errorData,
+                );
               }
             } else {
               console.log(
-                '  ⚠ Skipping comment sync - no conversation ID found'
+                '  ⚠ Skipping comment sync - no conversation ID found',
               );
             }
           }
@@ -2526,7 +2751,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
         console.log('  Task changed event for task:', taskId);
         console.log(
           '  Event change details:',
-          JSON.stringify(event.change, null, 2)
+          JSON.stringify(event.change, null, 2),
         );
 
         // Check if this is a custom field change
@@ -2537,7 +2762,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
           if (event.change.new_value) {
             console.log(
               '  New value:',
-              JSON.stringify(event.change.new_value, null, 2)
+              JSON.stringify(event.change.new_value, null, 2),
             );
           }
           isTicketStatusChange = true;
@@ -2566,7 +2791,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
           ) {
             console.log(
               '  Ticket Status field found:',
-              JSON.stringify(field, null, 2)
+              JSON.stringify(field, null, 2),
             );
 
             // For enum fields, get the value properly
@@ -2574,7 +2799,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
               ticketStatus = field.enum_value.name;
               console.log(
                 '  Ticket Status from enum_value.name:',
-                ticketStatus
+                ticketStatus,
               );
             } else if (field.display_value) {
               ticketStatus = field.display_value;
@@ -2584,7 +2809,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
             if (ticketStatus) {
               console.log(
                 '  ✓ Found Ticket Status in custom field:',
-                ticketStatus
+                ticketStatus,
               );
             } else {
               console.log('  ⚠ Ticket Status field exists but has no value');
@@ -2597,15 +2822,15 @@ app.post('/asana-webhook-prod', async (req, res) => {
         console.log('\n  === DEBUGGING CUSTOM FIELDS ===');
         console.log(
           '  Expected Intercom Conversation ID field GID:',
-          ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID || '(NOT CONFIGURED)'
+          ASANA_CUSTOM_FIELDS.INTERCOM_CONVERSATION_ID || '(NOT CONFIGURED)',
         );
         console.log(
           '  Expected Ticket Status field GID:',
-          ASANA_CUSTOM_FIELDS.TICKET_STATUS || '(NOT CONFIGURED)'
+          ASANA_CUSTOM_FIELDS.TICKET_STATUS || '(NOT CONFIGURED)',
         );
         console.log(
           '  Expected Ticket Date field GID:',
-          ASANA_CUSTOM_FIELDS.TICKET_DATE || '(NOT CONFIGURED)'
+          ASANA_CUSTOM_FIELDS.TICKET_DATE || '(NOT CONFIGURED)',
         );
 
         if (customFields.length > 0) {
@@ -2642,7 +2867,7 @@ app.post('/asana-webhook-prod', async (req, res) => {
         // Fetch full ticket to get ticket type ID
         const ticket = await getTicket(ticketId);
         const ticketTypeId = ticket?.ticket_type?.id;
-        
+
         if (ticketTypeId) {
           console.log(`  ℹ Ticket type ID: ${ticketTypeId}`);
         }
@@ -2653,34 +2878,38 @@ app.post('/asana-webhook-prod', async (req, res) => {
           const isWhitelisted = whitelistStatus.includes(ticketStatus);
           const isTicketOpen = ticket?.open === true;
           const shouldCloseTicket = !isWhitelisted && isTicketOpen;
-          
-          console.log(`  Status "${ticketStatus}" whitelisted: ${isWhitelisted}`);
+
+          console.log(
+            `  Status "${ticketStatus}" whitelisted: ${isWhitelisted}`,
+          );
           console.log(`  Ticket open: ${isTicketOpen}`);
-          
+
           if (shouldCloseTicket) {
-            console.log('  → Status not whitelisted and ticket is open, will close ticket in same request');
+            console.log(
+              '  → Status not whitelisted and ticket is open, will close ticket in same request',
+            );
           }
-          
+
           // Update ticket state (and close if needed) in a single API call
           const stateUpdateResult = await updateTicketStateId(
             ticketId,
             ticketStatus,
             ticketTypeId, // Pass ticket type ID for filtering
-            shouldCloseTicket // Pass flag to close ticket in same request
+            shouldCloseTicket, // Pass flag to close ticket in same request
           );
-          
+
           if (stateUpdateResult) {
             console.log('  ✓ Successfully updated Intercom ticket');
           } else {
             console.log(
-              "  ℹ Could not match ticket status to a state ID (this is normal if status doesn't match state labels)"
+              "  ℹ Could not match ticket status to a state ID (this is normal if status doesn't match state labels)",
             );
           }
         } else {
           console.log('  ℹ No Ticket Status value to sync');
           console.log(
             '  Expected custom field GID:',
-            ASANA_CUSTOM_FIELDS.TICKET_STATUS
+            ASANA_CUSTOM_FIELDS.TICKET_STATUS,
           );
         }
       }
