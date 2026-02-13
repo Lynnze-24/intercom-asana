@@ -2518,15 +2518,55 @@ app.post('/asana-webhook-prod', async (req, res) => {
           console.log('  Created by:', createdByName, '(GID:', attachment.created_by?.gid, ')');
 
           // Skip attachments uploaded by our integration (prevents echo-back loop)
-          if (apiUserGid && attachment.created_by?.gid === apiUserGid) {
-            console.log('  ℹ Skipping - attachment was uploaded by our integration (preventing loop)');
+          const creatorGid = attachment.created_by?.gid;
+          if (
+            apiUserGid &&
+            creatorGid &&
+            String(creatorGid) === String(apiUserGid)
+          ) {
+            console.log(
+              '  ℹ Skipping - attachment was uploaded by our integration (preventing loop)',
+            );
             continue;
           }
 
           // Skip if already handled by the story handler in this same webhook call
-          if (processedAssetGids.has(attachmentGid)) {
-            console.log('  ℹ Skipping - attachment already handled by comment sync (preventing duplicate)');
+          const attachmentGidStr = String(attachmentGid);
+          if (processedAssetGids.has(attachmentGidStr)) {
+            console.log(
+              '  ℹ Skipping - attachment already handled by comment sync (preventing duplicate)',
+            );
             continue;
+          }
+
+          // Skip if attachment was added via a comment (prevents duplicate when story
+          // and attachment events arrive in separate webhook payloads)
+          const storiesRes = await fetch(
+            `https://app.asana.com/api/1.0/tasks/${taskId}/stories?opt_fields=text`,
+            {
+              method: 'GET',
+              headers: {
+                Authorization: `Bearer ${ASANA_TOKEN}`,
+                Accept: 'application/json',
+              },
+            },
+          );
+          if (storiesRes.ok) {
+            const storiesData = await storiesRes.json();
+            const stories = storiesData.data || [];
+            const inComment = stories.some(
+              (s) =>
+                s.text &&
+                new RegExp(
+                  `asset_id=${attachmentGidStr}(?![0-9])`,
+                ).test(s.text),
+            );
+            if (inComment) {
+              console.log(
+                '  ℹ Skipping - attachment is in a comment (already posted by story handler)',
+              );
+              continue;
+            }
           }
 
           if (!downloadUrl) {
@@ -2622,9 +2662,10 @@ app.post('/asana-webhook-prod', async (req, res) => {
               const assetIds = [];
               let match;
               while ((match = asanaAssetUrlRegex.exec(story.text)) !== null) {
-                assetIds.push(match[1]);
+                const aid = String(match[1]);
+                assetIds.push(aid);
                 // Mark as handled so the attachment handler won't duplicate
-                processedAssetGids.add(match[1]);
+                processedAssetGids.add(aid);
               }
 
               // Clean comment text by removing Asana asset URLs
